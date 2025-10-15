@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>MYOT: Create and Share Textbooks</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+
+  <!-- libs -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+  <style>
+    .cell { padding: .5rem; }
+    .cell-view { cursor: text; border-radius: .375rem; }
+    .cell-view:hover { background: rgba(0,0,0,.05); }
+    .cell-input { width: 100%; border: 1px solid #ccc; border-radius: .375rem; padding: .4rem .55rem; color: black; }
+    .badge { display:inline-block; padding:.25rem .4rem; border:1px solid #ccc; border-radius:.375rem; font-size:.8rem; color:black; background:#f9f9f9; }
+    .drag-handle { user-select: none; }
+  </style>
+</head>
+<body class="bg-white text-black">
+  <div class="max-w-5xl mx-auto p-6 space-y-6">
+    <header class="flex items-center justify-between">
+      <h1 class="text-2xl font-bold text-red-600">MYOTextbook</h1>
+      <div class="flex items-center gap-2">
+        <button id="newProjectBtn" class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">New Project</button>
+        <button id="profileBtn" class="px-3 py-1.5 rounded border border-gray-300 text-black">Profile</button>
+        <button id="addUserBtn" class="px-3 py-1.5 rounded bg-gray-800 text-white hidden">Add User</button>
+          <button id="logoutBtn" class="px-3 py-1.5 rounded bg-gray-400 text-white hover:bg-gray-500">Log Out</button>
+      </div>
+    </header>
+
+    <!-- Projects list -->
+   <section id="projects" class="bg-gray-100 p-4 rounded shadow">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-semibold text-red-600">Projects</h2>
+    <div class="w-full max-w-sm">
+      <input id="projectSearch"
+             class="w-full border border-gray-300 rounded px-3 py-2 bg-white text-black"
+             placeholder="Search projects by name or keywords…">
+    </div>
+  </div>
+
+  <div class="overflow-x-auto border border-gray-200 rounded">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-200 text-left">
+        <tr>
+          <th class="p-2 w-[35%] text-red-600">Name</th>
+          <th class="p-2 w-[12%] text-red-600">Created</th>
+          <th class="p-2 w-[12%] text-red-600">Modified</th>
+          <th class="p-2 text-red-600">Keywords</th>
+          <th class="p-2 w-[12%] text-red-600">Owner</th>
+          <th class="p-2 w-[1%]"></th>
+        </tr>
+      </thead>
+      <tbody id="projectList"></tbody>
+    </table>
+  </div>
+
+  <div id="projectEmpty" class="text-gray-500 italic mt-3 hidden">
+    No projects yet. Click “New Project”.
+  </div>
+</section>
+    <!-- Editor -->
+    <section id="editor" class="hidden bg-gray-100 p-4 rounded shadow">
+      <!-- Top: Back + Project name -->
+   <div class="flex items-center gap-2 mb-2">
+  <button id="backBtn"
+          class="px-3 py-2 rounded bg-gray-300 hover:bg-gray-400 active:bg-gray-500 text-black"
+          title="Back to project list">← Back</button>
+  <input id="projectName"
+         class="border border-red-500 rounded px-3 py-2 w-full bg-white text-black"
+         placeholder="Project name"/>
+         <div id="projectMeta" class="text-sm text-gray-600"></div>
+</div>
+
+<!-- Keywords row -->
+<div class="mb-4">
+  <label class="block text-sm font-medium text-red-600 mb-1">Keywords (comma-separated)</label>
+  <input id="projectKeywords"
+         class="w-full border border-gray-300 rounded px-3 py-2 bg-white text-black"
+         placeholder="e.g., civics, philosophy, elections"/>
+</div>
+
+      <!-- STACKED PANELS -->
+      <div class="space-y-4 mb-4">
+       <!-- Add content -->
+<section class="bg-white p-4 rounded border border-gray-200 shadow">
+  <h3 class="font-semibold mb-3 text-red-600">Add content</h3>
+
+  <!-- Unified add form -->
+  <form id="addContentForm" class="space-y-4">
+    <!-- Row 1: Kind + Title/Caption -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">Type</label>
+  <select name="kind" id="kindSelect"
+    class="w-full border border-red-500 rounded px-3 py-2 bg-white text-black">
+    <option value="url">URL</option>
+    <option value="wikipedia">Wikipedia</option>
+    <option value="image">Image</option>
+    <option value="file">File</option>
+    <option value="heading">Heading</option>
+    <option value="titlepage">Title Page</option>
+  </select>
+      </div>
+
+      <div class="md:col-span-3">
+        <label class="block text-xs text-gray-500 mb-1">Title / Caption</label>
+        <input name="title" id="titleInput" placeholder="Title / Caption"
+               class="w-full border border-red-500 rounded px-3 py-2 bg-white text-black"/>
+      </div>
+    </div>
+
+    <!-- Row 2: URL/File or Subtitle for Title Page -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div id="urlRow" class="md:col-span-3">
+        <label class="block text-xs text-gray-500 mb-1">URL</label>
+        <input name="url" id="urlInput" placeholder="URL (https://...)"
+               class="w-full border border-red-500 rounded px-3 py-2 bg-white text-black"/>
+      </div>
+      <div id="fileRow">
+        <label class="block text-xs text-gray-500 mb-1">Browse</label>
+        <input type="file" name="file" id="fileInput"
+               accept=".docx,application/pdf,image/*"
+               class="w-full border rounded px-3 py-2 bg-white text-black"/>
+      </div>
+      <div id="subtitleRow" class="md:col-span-4 hidden">
+        <label class="block text-xs text-gray-500 mb-1">Subtitle (optional)</label>
+        <input name="subtitle" id="subtitleInput" placeholder="Subtitle for Title Page"
+               class="w-full border border-red-500 rounded px-3 py-2 bg-white text-black"/>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="flex justify-end">
+      <button type="submit"
+              class="px-4 py-2 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">
+        Add
+      </button>
+    </div>
+  </form>
+</section>
+
+<!-- Export options -->
+<section class="bg-white p-4 rounded border border-gray-200 shadow">
+  <h3 class="font-semibold mb-3 text-red-600">Export options</h3>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <label class="flex items-center gap-2">
+      <input id="optToc" type="checkbox" checked class="accent-red-600"/>
+      <span>Include Table of Contents</span>
+    </label>
+    <label class="flex items-center gap-2">
+      <input id="optPageNumbers" type="checkbox" checked class="accent-red-600"/>
+      <span>Show page numbers (PDF)</span>
+    </label>
+  </div>
+
+  <div class="flex gap-2 mt-4">
+    <button id="btnExportPdf"
+            class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">
+      Export PDF
+    </button>
+
+    <button id="btnExportEpub"
+            class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-800 active:bg-red-900 text-white">
+      Export EPUB
+    </button>
+
+    <button id="btnExportMarkdown"
+            class="px-3 py-1.5 rounded bg-gray-600 hover:bg-gray-700 active:bg-gray-800 text-white">
+      Export Markdown
+    </button>
+    
+    <button id="copyEditBtn"
+        class="px-3 py-1.5 rounded border border-red-600 text-red-700 hover:bg-red-50">
+  Copy and Edit
+</button>
+  </div>
+</section>
+
+</div>
+      <!-- Contents -->
+      <div>
+        <h3 class="font-semibold mb-2 text-red-600">Contents (drag to reorder)</h3>
+        <table class="w-full text-sm border border-red-500">
+          <thead class="bg-gray-200">
+            <tr>
+              <th class="p-2 w-10 text-red-600">#</th>
+              <th class="p-2 text-red-600">Title</th>
+              <th class="p-2 text-red-600">Type</th>
+              <th class="p-2 text-red-600">URL / File</th>
+              <th class="p-2 w-16"></th>
+            </tr>
+          </thead>
+          <tbody id="itemsTbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Bottom save button -->
+      <div class="mt-6 flex justify-end">
+        <button id="saveProjectBtn"
+                class="px-4 py-2 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">
+          Save Project
+        </button>
+      </div>
+      <!-- Version History: only show in editor/project view -->
+      <h3 class="font-semibold mt-6 mb-2 text-red-600">Version History</h3>
+      <table class="w-full text-sm border">
+        <thead class="bg-gray-200">
+          <tr>
+            <th class="p-2 text-left">When</th>
+            <th class="p-2 text-left">User</th>
+            <th class="p-2 text-left">Action</th>
+            <th class="p-2 text-left">From → To</th>
+          </tr>
+        </thead>
+        <tbody id="versionLogTbody"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+
+
+
+<!-- Profile Modal -->
+<div id="profileModal" class="fixed inset-0 hidden items-center justify-center bg-black/40">
+  <div class="w-[min(92vw,520px)] rounded bg-white p-5">
+    <h2 class="text-lg font-semibold mb-3">Your Profile</h2>
+    <form id="profileForm" class="space-y-2">
+      <input name="first_name" class="w-full border rounded px-3 py-2" placeholder="First Name"/>
+      <input name="last_name" class="w-full border rounded px-3 py-2" placeholder="Last Name"/>
+      <input name="affiliation" class="w-full border rounded px-3 py-2" placeholder="Affiliation"/>
+      <input name="email" class="w-full border rounded px-3 py-2" placeholder="Email"/>
+      <input name="password" type="password" class="w-full border rounded px-3 py-2" placeholder="(Optional) New Password"/>
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" id="profileClose" class="px-3 py-1.5 rounded border">Close</button>
+        <button class="px-3 py-1.5 rounded bg-red-600 text-white">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Login Modal (if not logged in) -->
+<div id="loginModal" class="fixed inset-0 hidden items-center justify-center bg-black/40">
+  <div class="w-[min(92vw,420px)] rounded bg-white p-5">
+    <h2 class="text-lg font-semibold mb-3">Login</h2>
+    <form id="loginForm" class="space-y-2">
+      <input name="username" class="w-full border rounded px-3 py-2" placeholder="Username" value="andrew"/>
+      <input name="password" type="password" class="w-full border rounded px-3 py-2" placeholder="Password" value="P@ssword"/>
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" id="loginClose" class="px-3 py-1.5 rounded border">Close</button>
+        <button class="px-3 py-1.5 rounded bg-red-600 text-white">Login</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Admin: Add User Modal -->
+<div id="addUserModal" class="fixed inset-0 hidden items-center justify-center bg-black/40">
+  <div class="w-[min(92vw,520px)] rounded bg-white p-5">
+    <h2 class="text-lg font-semibold mb-3">Add User</h2>
+    <form id="addUserForm" class="space-y-2">
+      <input name="username" class="w-full border rounded px-3 py-2" placeholder="Username"/>
+      <input name="password" class="w-full border rounded px-3 py-2" placeholder="Password"/>
+      <input name="first_name" class="w-full border rounded px-3 py-2" placeholder="First Name"/>
+      <input name="last_name" class="w-full border rounded px-3 py-2" placeholder="Last Name"/>
+      <input name="affiliation" class="w-full border rounded px-3 py-2" placeholder="Affiliation"/>
+      <input name="email" class="w-full border rounded px-3 py-2" placeholder="Email"/>
+      <label class="inline-flex items-center gap-2"><input type="checkbox" name="is_admin"/> Admin</label>
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" id="addUserClose" class="px-3 py-1.5 rounded border">Close</button>
+        <button class="px-3 py-1.5 rounded bg-red-600 text-white">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+  <!-- Export Progress Modal -->
+<div id="export-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50">
+  <div class="w-[min(92vw,520px)] rounded-xl bg-white p-5 shadow-xl">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-red-600">Export in progress</h2>
+      <button id="export-close" class="text-red-400 hover:text-red-600" aria-label="Close">&times;</button>
+    </div>
+
+    <p id="export-message" class="mt-2 text-sm text-gray-700">Starting…</p>
+
+    <div class="mt-4 h-2 w-full rounded bg-red-100">
+      <div id="export-bar" class="h-2 w-0 rounded bg-red-600 transition-all"></div>
+    </div>
+
+    <div class="mt-3 text-right">
+      <span id="export-percent" class="text-sm text-red-600">0%</span>
+    </div>
+
+    <div id="export-error" class="mt-3 hidden rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700"></div>
+
+    <div id="export-actions" class="mt-4 hidden text-right">
+      <a id="export-download" class="inline-block rounded bg-red-600 px-4 py-2 text-white hover:bg-red-700" href="#" download></a>
+        Download
+      </a>
+    </div>
+  </div>
+</div>
+
+<script src="/progress.js"></script>
+
+  <!-- Legal/Disclaimer text: only show on main page -->
+  <div id="legalDisclaimer" class="mt-8 text-xs text-gray-600">
+    This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.<br><br>
+    This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.<br><br>
+    This program enables the collection and exporting of materials, by using this program, all users take sole responsibility for their use and respect of copyrights of all assembled materials.
+  </div>
+  </body>
+</html>

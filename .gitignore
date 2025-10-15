@@ -1,0 +1,17 @@
+# Node / tooling
+node_modules/
+npm-debug.log*
+.DS_Store
+package-lock*.json
+!package-lock.json
+
+# Local data & builds
+data/uploads/
+data/exports/
+data/tmp/
+data/db.sqlite
+data/db.sqlite-wal
+data/db.sqlite-shm
+
+# Env / secrets (if you add one later)
+.env
