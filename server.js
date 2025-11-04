@@ -464,7 +464,18 @@ async function extractPdfText(pdfPath) {
 function cleanExtractedText(text) {
   if (!text) return null;
   
-  // First normalize line endings and basic cleanup
+  // First remove invalid XML characters that can break EPUB/XML formats
+  // Remove control characters except tab (9), newline (10), and carriage return (13)
+  text = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+  
+  // Remove or replace other problematic characters
+  text = text
+    .replace(/[\uFFF0-\uFFFF]/g, '') // Remove specials block
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '') // Remove additional control chars
+    .replace(/\uFEFF/g, '') // Remove BOM (Byte Order Mark)
+    .replace(/[\u200B-\u200D\uFEFF]/g, ''); // Remove zero-width spaces and similar
+  
+  // Now normalize line endings and basic cleanup
   let cleaned = text
     .replace(/\f/g, '\n\n--- Page Break ---\n\n') // Mark page breaks clearly
     .replace(/\r\n/g, '\n') // Normalize line endings
@@ -521,10 +532,19 @@ function cleanExtractedText(text) {
   });
   
   // Join paragraphs with double newlines and limit excessive spacing
-  return processedParagraphs
+  let result = processedParagraphs
     .join('\n\n')
     .replace(/\n{4,}/g, '\n\n\n') // Limit consecutive newlines to max 3
     .trim();
+  
+  // Final safety check - ensure only valid UTF-8 characters remain
+  // Replace any remaining invalid characters with spaces
+  result = result.replace(/[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/g, ' ');
+  
+  // Clean up any double spaces created by the replacement
+  result = result.replace(/ +/g, ' ');
+    
+  return result;
 }
 
 // Check if PDF contains extractable text (not just scanned images)
