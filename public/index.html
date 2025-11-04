@@ -148,44 +148,6 @@
   </form>
 </section>
 
-<!-- Export options -->
-<section class="bg-white p-4 rounded border border-gray-200 shadow">
-  <h3 class="font-semibold mb-3 text-red-600">Export options</h3>
-
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-    <label class="flex items-center gap-2">
-      <input id="optToc" type="checkbox" checked class="accent-red-600"/>
-      <span>Include Table of Contents</span>
-    </label>
-    <label class="flex items-center gap-2">
-      <input id="optPageNumbers" type="checkbox" checked class="accent-red-600"/>
-      <span>Show page numbers (PDF)</span>
-    </label>
-  </div>
-
-  <div class="flex gap-2 mt-4">
-    <button id="btnExportPdf"
-            class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">
-      Export PDF
-    </button>
-
-    <button id="btnExportEpub"
-            class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-800 active:bg-red-900 text-white">
-      Export EPUB
-    </button>
-
-    <button id="btnExportMarkdown"
-            class="px-3 py-1.5 rounded bg-gray-600 hover:bg-gray-700 active:bg-gray-800 text-white">
-      Export Markdown
-    </button>
-    
-    <button id="copyEditBtn"
-        class="px-3 py-1.5 rounded border border-red-600 text-red-700 hover:bg-red-50">
-  Copy and Edit
-</button>
-  </div>
-</section>
-
 </div>
       <!-- Contents -->
       <div>
@@ -211,6 +173,45 @@
           Save Project
         </button>
       </div>
+
+      <!-- Export options -->
+      <section class="bg-white p-4 rounded border border-gray-200 shadow mt-6">
+        <h3 class="font-semibold mb-3 text-red-600">Export options</h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label class="flex items-center gap-2">
+            <input id="optToc" type="checkbox" checked class="accent-red-600"/>
+            <span>Include Table of Contents</span>
+          </label>
+          <label class="flex items-center gap-2">
+            <input id="optPageNumbers" type="checkbox" checked class="accent-red-600"/>
+            <span>Show page numbers (PDF)</span>
+          </label>
+        </div>
+
+        <div class="flex gap-2 mt-4">
+          <button id="btnExportPdf"
+                  class="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 active:bg-red-800 text-white">
+            Export PDF
+          </button>
+
+          <button id="btnExportEpub"
+                  class="px-3 py-1.5 rounded bg-red-700 hover:bg-red-800 active:bg-red-900 text-white">
+            Export EPUB
+          </button>
+
+          <button id="btnExportMarkdown"
+                  class="px-3 py-1.5 rounded bg-gray-600 hover:bg-gray-700 active:bg-gray-800 text-white">
+            Export Markdown
+          </button>
+          
+          <button id="copyEditBtn"
+              class="px-3 py-1.5 rounded border border-red-600 text-red-700 hover:bg-red-50">
+        Copy and Edit
+      </button>
+        </div>
+      </section>
+
       <!-- Version History: only show in editor/project view -->
       <h3 class="font-semibold mt-6 mb-2 text-red-600">Version History</h3>
       <table class="w-full text-sm border">

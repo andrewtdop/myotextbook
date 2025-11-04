@@ -328,6 +328,225 @@ function whichExists(cmd) {
   } catch { return false; }
 }
 
+// Count pages in PDF file
+async function countPdfPages(pdfPath) {
+  try {
+    // Try using pdfinfo first (part of poppler-utils)
+    if (whichExists("pdfinfo")) {
+      const result = spawnSync("pdfinfo", [pdfPath], { encoding: "utf8", timeout: 10000 });
+      if (result.status === 0 && result.stdout) {
+        const match = result.stdout.match(/Pages:\s*(\d+)/);
+        if (match) return parseInt(match[1], 10);
+      }
+    }
+    
+    // Fallback to qpdf if available
+    if (whichExists("qpdf")) {
+      const result = spawnSync("qpdf", ["--show-npages", pdfPath], { encoding: "utf8", timeout: 10000 });
+      if (result.status === 0 && result.stdout) {
+        const pages = parseInt(result.stdout.trim(), 10);
+        if (!isNaN(pages)) return pages;
+      }
+    }
+    
+    // If no tools available, return null
+    return null;
+  } catch (err) {
+    console.warn(`Failed to count PDF pages for ${pdfPath}:`, err.message);
+    return null;
+  }
+}
+
+// Count pages in DOCX file by converting to PDF temporarily
+async function countDocxPages(docxPath) {
+  try {
+    // We'll use pandoc to convert to PDF and then count pages
+    if (!whichExists("pandoc")) return null;
+    
+    const tempDir = path.join(__dirname, 'data', 'tmp');
+    const tempPdf = path.join(tempDir, `temp-${nanoid()}.pdf`);
+    
+    try {
+      // Convert DOCX to PDF using pandoc with timeout
+      const result = spawnSync("pandoc", [docxPath, "-o", tempPdf], { 
+        encoding: "utf8", 
+        timeout: 30000 // 30 second timeout for conversion
+      });
+      if (result.status === 0 && fs.existsSync(tempPdf)) {
+        const pageCount = await countPdfPages(tempPdf);
+        fs.unlinkSync(tempPdf); // Clean up
+        return pageCount;
+      }
+    } catch (err) {
+      // Clean up temp file if it exists
+      if (fs.existsSync(tempPdf)) {
+        fs.unlinkSync(tempPdf);
+      }
+      throw err;
+    }
+    
+    return null;
+  } catch (err) {
+    console.warn(`Failed to count DOCX pages for ${docxPath}:`, err.message);
+    return null;
+  }
+}
+
+// Extract text from PDF file
+async function extractPdfText(pdfPath) {
+  try {
+    // Try using pdftotext with different approaches
+    if (whichExists("pdftotext")) {
+      // First try: Simple text extraction (often more complete)
+      let result = spawnSync("pdftotext", ["-raw", pdfPath, "-"], { 
+        encoding: "utf8", 
+        timeout: 45000,
+        maxBuffer: 20 * 1024 * 1024 // 20MB buffer for large documents
+      });
+      
+      if (result.status === 0 && result.stdout) {
+        let text = result.stdout.trim();
+        if (text.length > 50) {
+          return cleanExtractedText(text);
+        }
+      }
+      
+      // Second try: Layout-preserved extraction if raw didn't work well
+      result = spawnSync("pdftotext", ["-layout", "-nopgbrk", pdfPath, "-"], { 
+        encoding: "utf8", 
+        timeout: 45000,
+        maxBuffer: 20 * 1024 * 1024
+      });
+      
+      if (result.status === 0 && result.stdout) {
+        let text = result.stdout.trim();
+        if (text.length > 50) {
+          return cleanExtractedText(text);
+        }
+      }
+      
+      // Third try: Specify encoding explicitly (sometimes helps)
+      result = spawnSync("pdftotext", ["-enc", "UTF-8", "-raw", pdfPath, "-"], { 
+        encoding: "utf8", 
+        timeout: 45000,
+        maxBuffer: 20 * 1024 * 1024
+      });
+      
+      if (result.status === 0 && result.stdout) {
+        let text = result.stdout.trim();
+        if (text.length > 50) {
+          return cleanExtractedText(text);
+        }
+      }
+    }
+    
+    // Fallback to Pandoc (often works well with PDFs)
+    if (whichExists("pandoc")) {
+      const result = spawnSync("pandoc", [pdfPath, "-t", "plain"], { 
+        encoding: "utf8", 
+        timeout: 45000,
+        maxBuffer: 20 * 1024 * 1024
+      });
+      if (result.status === 0 && result.stdout) {
+        return cleanExtractedText(result.stdout.trim());
+      }
+    }
+    
+    // If no tools can extract text, return null
+    return null;
+  } catch (err) {
+    console.warn(`Failed to extract PDF text from ${pdfPath}:`, err.message);
+    return null;
+  }
+}
+
+// Clean up extracted PDF text
+function cleanExtractedText(text) {
+  if (!text) return null;
+  
+  // First normalize line endings and basic cleanup
+  let cleaned = text
+    .replace(/\f/g, '\n\n--- Page Break ---\n\n') // Mark page breaks clearly
+    .replace(/\r\n/g, '\n') // Normalize line endings
+    .replace(/\r/g, '\n') // Handle old Mac line endings
+    .replace(/\s+\n/g, '\n') // Remove trailing spaces before newlines
+    .replace(/^\s+/gm, '') // Remove leading whitespace from each line
+    .trim();
+  
+  // Now handle paragraph flow - join lines that are part of the same paragraph
+  // Split into potential paragraphs (double newlines or more)
+  const paragraphs = cleaned.split(/\n\s*\n+/);
+  
+  const processedParagraphs = paragraphs.map(paragraph => {
+    // Skip page break markers
+    if (paragraph.includes('--- Page Break ---')) {
+      return paragraph;
+    }
+    
+    // For each paragraph, join lines that don't end with sentence-ending punctuation
+    const lines = paragraph.split('\n').filter(line => line.trim());
+    
+    if (lines.length <= 1) return paragraph;
+    
+    let result = [];
+    let currentSentence = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      // Add space if we're continuing a sentence
+      if (currentSentence && !currentSentence.endsWith(' ')) {
+        currentSentence += ' ';
+      }
+      currentSentence += line;
+      
+      // Check if this line likely ends a sentence or paragraph
+      const endsWithPunctuation = /[.!?:]\s*$/.test(line);
+      const nextLineStartsNewSentence = i === lines.length - 1 || 
+        (lines[i + 1] && /^[A-Z]/.test(lines[i + 1].trim()));
+      
+      if (endsWithPunctuation || nextLineStartsNewSentence || i === lines.length - 1) {
+        result.push(currentSentence);
+        currentSentence = '';
+      }
+    }
+    
+    // Add any remaining content
+    if (currentSentence.trim()) {
+      result.push(currentSentence);
+    }
+    
+    return result.join(' ');
+  });
+  
+  // Join paragraphs with double newlines and limit excessive spacing
+  return processedParagraphs
+    .join('\n\n')
+    .replace(/\n{4,}/g, '\n\n\n') // Limit consecutive newlines to max 3
+    .trim();
+}
+
+// Check if PDF contains extractable text (not just scanned images)
+async function pdfHasExtractableText(pdfPath) {
+  try {
+    const text = await extractPdfText(pdfPath);
+    if (!text) return false;
+    
+    // More lenient check - just need some meaningful content
+    const cleanText = text.replace(/\s+/g, ' ').trim();
+    const meaningfulContent = cleanText.replace(/[^\w\.,;:!?\-'"()]/g, '');
+    
+    // Lower threshold and check for variety of characters
+    if (meaningfulContent.length < 15) return false;
+    
+    const uniqueChars = new Set(cleanText.toLowerCase().replace(/\s/g, ''));
+    return uniqueChars.size > 4; // At least 5 different characters
+  } catch (err) {
+    return false;
+  }
+}
+
 function safeExtFromUrl(u, fallback = "bin") {
   try {
     const ext = path.extname(new URL(u).pathname).toLowerCase().replace(".", "");
@@ -571,7 +790,11 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
   let sawAnySvg = false;
 
   // Output file base and path
-  const outBase = `${project.id}-${Date.now()}`;
+  const sanitizedName = (project.name || "Untitled")
+    .replace(/[<>:"/\\|?*]/g, '') // Remove invalid filename characters
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .substring(0, 100); // Limit length
+  const outBase = `${sanitizedName}-${Date.now()}`;
   const ext = format === "markdown" ? "md" : format;
   const outPath = path.join(EXPORTS_DIR, `${outBase}.${ext}`);
 
@@ -685,8 +908,49 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     if (it.type === "pdf") {
       const abs = resolveLocalPath(it.local_path);
       if (!abs) { console.warn(`Skipping missing PDF: ${it.local_path}`); report(`Skipped missing PDF`); isFirstItem = false; continue; }
-      pdfsToAppend.push(abs);
-      report(`Queued PDF: ${path.basename(abs)}`);
+      
+      // Count pages for TOC
+      const pageCount = await countPdfPages(abs);
+      const pageInfo = pageCount ? ` (${pageCount} page${pageCount === 1 ? '' : 's'})` : '';
+      
+      // Add TOC entry with page count
+      itemMd += `# ${it.title}${pageInfo}\n\n`;
+      
+      // For Markdown and EPUB exports, try to extract and include PDF text
+      if (format === "markdown" || format === "epub") {
+        report(`Extracting text from PDF: ${path.basename(abs)}...`);
+        const extractedText = await extractPdfText(abs);
+        if (extractedText && extractedText.trim().length > 50) { // Must have substantial content
+          itemMd += `*Text extracted from PDF: ${path.basename(abs)}*\n\n`;
+          
+          // Format the extracted text nicely
+          const formattedText = extractedText
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .join('\n\n'); // Double space for better paragraph separation
+          
+          itemMd += `${formattedText}\n\n`;
+          itemMd += `---\n\n`; // Add separator
+          report(`✓ Added PDF with extracted text (${extractedText.length} chars): ${it.title}${pageInfo}`);
+        } else {
+          itemMd += `*PDF Document: ${path.basename(abs)} - Text extraction not available (may be scanned/image-based)*\n\n`;
+          report(`⚠️ Added PDF (no extractable text): ${it.title}${pageInfo}`);
+        }
+      } else {
+        // For PDF exports, just add a placeholder since we'll append the actual PDF
+        itemMd += `*PDF Document: ${path.basename(abs)}*\n\n`;
+        report(`Added PDF placeholder: ${it.title}${pageInfo}`);
+      }
+      
+      const titled = mdFile(workdir, `pdf-${it.id}-titled.md`, itemMd);
+      inputs.push(titled);
+      
+      // For PDF exports, queue the actual PDF for appending at the end
+      if (format === "pdf") {
+        pdfsToAppend.push(abs);
+      }
+      
       isFirstItem = false;
       continue;
     }
@@ -694,18 +958,23 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     if (it.type === "docx") {
       const abs = resolveLocalPath(it.local_path);
       if (!abs) { console.warn(`Skipping missing DOCX: ${it.local_path}`); report(`Skipped missing DOCX`); isFirstItem = false; continue; }
+      
+      // Count pages for TOC
+      const pageCount = await countDocxPages(abs);
+      const pageInfo = pageCount ? ` (${pageCount} page${pageCount === 1 ? '' : 's'})` : '';
+      
       const out = path.join(workdir, `docx-${it.id}.md`);
       // Convert DOCX to Markdown using Pandoc
       async function convertDocxToMd(inputDocx, outputMd) {
         await run("pandoc", [inputDocx, "-f", "docx", "-t", "gfm", "-o", outputMd]);
       }
       await convertDocxToMd(abs, out);
-      itemMd += `# ${it.title}\n\n` + fs.readFileSync(out, "utf8");
+      itemMd += `# ${it.title}${pageInfo}\n\n` + fs.readFileSync(out, "utf8");
       const titled = mdFile(workdir, `docx-${it.id}-titled.md`, itemMd);
       const res = await scrubMarkdownForPdf(titled, workdir);
       if (res.hadSvg) sawAnySvg = true;
       inputs.push(titled);
-      report(`Added DOCX: ${it.title}`);
+      report(`Added DOCX: ${it.title}${pageInfo}`);
       isFirstItem = false;
       continue;
     }
@@ -775,16 +1044,18 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     }
   }
   
-  // Attribution
+  // Attribution and Sources
   let creditsText = authorBanner("", project);
+  let creditsAdded = false;
+  
   if (wikipediaAttribution.length) {
     const a = [
       creditsText,
-      "# Attribution",
+      "Attributions:",
       "",
       "This document includes content from Wikipedia, available under the Creative Commons Attribution-ShareAlike License (CC BY-SA).",
       "",
-      ...wikipediaAttribution.map(e => `- **${e.title}** — ${e.url}${e.revision ? ` (rev ${e.revision})` : ""} (accessed ${new Date().toISOString().split("T")[0]})`),
+      ...wikipediaAttribution.map(e => `• ${e.title} — ${e.url}${e.revision ? ` (rev ${e.revision})` : ""} (accessed ${new Date().toISOString().split("T")[0]})`),
       ""
     ].join("\n");
     const attr = mdFile(workdir, "attribution.md", a);
@@ -792,16 +1063,17 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     if (res.hadSvg) sawAnySvg = true;
     inputs.push(attr);
     report("Added attribution");
+    creditsAdded = true;
   }
   if (nonWikiAttribution.length) {
     const s = [
-      creditsText,
-      "# Sources",
+      creditsAdded ? "" : creditsText,
+      "Sources:",
       "",
       ...nonWikiAttribution.map(e => {
         const label = e.kind === "image" ? "(image)" : "(web)";
         const title = (e.title || "").trim() || "(Untitled)";
-        return `- **${title}** — ${e.url} ${label} (accessed ${e.accessed})`;
+        return `• ${title} — ${e.url} ${label} (accessed ${e.accessed})`;
       }),
       ""
     ].join("\n");
@@ -1138,6 +1410,38 @@ app.post("/api/auth/login", express.json(), (req, res) => {
 
 app.post("/api/auth/logout", (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 
+// Create user endpoint (admin only)
+app.post("/api/admin/users", requireAuth, express.json(), (req, res) => {
+  // Check if current user is admin
+  if (!req.session.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  
+  const { username, password, first_name, last_name, affiliation, email, is_admin } = req.body || {};
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: "Username and password required" });
+  }
+  
+  try {
+    // Check if user already exists
+    const existing = db.prepare(`SELECT username FROM users WHERE username=?`).get(username);
+    if (existing) {
+      return res.status(400).json({ error: "Username already exists" });
+    }
+    
+    // Create the user
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`INSERT INTO users (username, password, first_name, last_name, affiliation, email, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    stmt.run(username, password, first_name || '', last_name || '', affiliation || '', email || '', is_admin ? 1 : 0, now, now);
+    
+    res.json({ ok: true, message: "User created successfully" });
+  } catch (err) {
+    console.error("Error creating user:", err);
+    res.status(500).json({ error: "Failed to create user" });
+  }
+});
+
 app.get("/api/profile", requireAuth, (req, res) => {
   const u = db.prepare(`SELECT username,first_name,last_name,affiliation,email,is_admin FROM users WHERE username=?`).get(req.session.user.username);
   res.json(u);
@@ -1211,6 +1515,48 @@ app.put("/api/projects/:id/items/reorder", (req, res) => {
     rows.forEach(r => updateItemPositions.run(r.position, r.id));
   });
   tx(order);
+  res.json({ ok: true });
+});
+
+// Update item in a project (PATCH)
+app.patch("/api/projects/:id/items/:itemId", express.json(), (req, res) => {
+  const p = getProject.get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  const itemId = req.params.itemId;
+  const item = getItemById.get(itemId, p.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  
+  const { title, source_url, options } = req.body;
+  const updates = {};
+  
+  if (title !== undefined) updates.title = title;
+  if (source_url !== undefined) updates.source_url = source_url;
+  if (options !== undefined) {
+    // Merge options with existing options
+    let currentOptions = {};
+    if (item.options_json) {
+      try {
+        currentOptions = JSON.parse(item.options_json);
+      } catch (e) {
+        currentOptions = {};
+      }
+    }
+    updates.options_json = JSON.stringify({ ...currentOptions, ...options });
+  }
+  
+  // Build dynamic UPDATE query
+  const fields = Object.keys(updates);
+  if (fields.length === 0) {
+    return res.status(400).json({ error: "No valid fields to update" });
+  }
+  
+  const setClause = fields.map(f => `${f} = ?`).join(', ');
+  const values = fields.map(f => updates[f]);
+  values.push(itemId); // for WHERE clause
+  
+  const stmt = db.prepare(`UPDATE items SET ${setClause} WHERE id = ?`);
+  stmt.run(...values);
+  
   res.json({ ok: true });
 });
 

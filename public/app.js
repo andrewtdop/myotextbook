@@ -394,8 +394,7 @@ function bindGlobalUI(){
       })
     });
 
-    // Return to dashboard so changes are visible in the list
-    goToProjects();
+    alert("Project saved successfully!");
   });
 
   // Back
