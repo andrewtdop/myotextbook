@@ -1333,12 +1333,14 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
         await run("gs", ["-dBATCH","-dNOPAUSE","-sDEVICE=pdfwrite", `-sOutputFile=${merged}`, ...finalPdfSequence]);
         fs.renameSync(merged, outPath);
       } else {
-        console.warn("No PDF merger (qpdf/pdfunite/gs) found; skipping PDF merge.");
+        throw new Error("PDF merge required but no PDF merger tool found. Please install qpdf, pdfunite (poppler-utils), or ghostscript (gs).");
       }
     } else if (finalPdfSequence.length === 1) {
       // Only one component, just copy it to output
       fs.copyFileSync(finalPdfSequence[0], outPath);
     }
+    
+    report("PDF export complete");
   }
 
   report("Done");
