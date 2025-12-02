@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS version_log (
   to_version TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS comments (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  comment_text TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users (username) ON DELETE CASCADE
+);
 `);
 
 // Seed dev admin 'andrew' (password: P@ssword) if missing
@@ -326,6 +337,55 @@ function whichExists(cmd) {
     const r = spawnSync(isWin ? "where" : "command", isWin ? [cmd] : ["-v", cmd], { stdio: "ignore" });
     return r.status === 0;
   } catch { return false; }
+}
+
+// Try to find a PDF engine in PATH or common locations
+function findPdfEngine(engineName) {
+  // First try standard PATH lookup
+  if (whichExists(engineName)) {
+    return engineName;
+  }
+  
+  // Common installation paths for macOS, Linux, and Windows
+  const commonPaths = {
+    'tectonic': [
+      '/usr/local/bin/tectonic',
+      '/opt/homebrew/bin/tectonic',
+      '/usr/bin/tectonic',
+      '~/.cargo/bin/tectonic',
+      process.env.HOME + '/.cargo/bin/tectonic'
+    ],
+    'xelatex': [
+      '/usr/local/bin/xelatex',
+      '/opt/homebrew/bin/xelatex',
+      '/usr/bin/xelatex',
+      '/Library/TeX/texbin/xelatex',
+      '/usr/local/texlive/2023/bin/x86_64-linux/xelatex',
+      '/usr/local/texlive/2024/bin/x86_64-linux/xelatex',
+      '/usr/local/texlive/2023/bin/universal-darwin/xelatex',
+      '/usr/local/texlive/2024/bin/universal-darwin/xelatex'
+    ]
+  };
+  
+  const paths = commonPaths[engineName] || [];
+  for (const p of paths) {
+    try {
+      const expandedPath = p.startsWith('~') ? path.join(process.env.HOME || '', p.slice(1)) : p;
+      if (fs.existsSync(expandedPath)) {
+        // Verify it's executable
+        try {
+          fs.accessSync(expandedPath, fs.constants.X_OK);
+          return expandedPath;
+        } catch {
+          // Not executable, continue searching
+        }
+      }
+    } catch {
+      // Path doesn't exist, continue
+    }
+  }
+  
+  return null;
 }
 
 // Count pages in PDF file
@@ -839,8 +899,29 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
   report("Preparing workspace");
   const workdir = fs.mkdtempSync(path.join(TMP_DIR, `build-${project.id}-`));
   const inputs = [];
-  const pdfsToPrepend = [];
-  const pdfsToAppend = [];
+  const pdfSequence = []; // Ordered sequence of PDF components to merge at the end
+  let hasMarkdownContent = false; // Track if we have any markdown to render
+
+  // Detect available PDF engines early if we're generating PDF
+  let engines = [];
+  let enginePaths = {}; // Store full paths for engines
+  if (format === "pdf") {
+    const tectonicPath = findPdfEngine("tectonic");
+    const xelatexPath = findPdfEngine("xelatex");
+    
+    if (tectonicPath) {
+      engines.push("tectonic");
+      enginePaths["tectonic"] = tectonicPath;
+    }
+    if (xelatexPath) {
+      engines.push("xelatex");
+      enginePaths["xelatex"] = xelatexPath;
+    }
+    
+    if (!engines.length) {
+      throw new Error("No PDF engine detected. Install tectonic or xelatex.");
+    }
+  }
 
   // Check for title page - we'll generate it as a separate PDF and prepend it
   let titlePageItem = items.find(it => it.type === "titlepage");
@@ -874,12 +955,14 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     const titleMdPath = path.join(workdir, 'titlepage.md');
     fs.writeFileSync(titleMdPath, titleMd);
     
-    // Generate title page PDF
+    // Generate title page PDF using the first available engine
     const titlePdfPath = path.join(workdir, 'titlepage.pdf');
-    const titleArgs = ['--pdf-engine', 'tectonic', '-V', 'geometry:margin=1in', '-o', titlePdfPath, titleMdPath];
+    const firstEngine = engines[0];
+    const firstEnginePath = enginePaths[firstEngine];
+    const titleArgs = ['--pdf-engine', firstEnginePath, '-V', 'geometry:margin=1in', '-o', titlePdfPath, titleMdPath];
     try {
       await run("pandoc", titleArgs);
-      pdfsToPrepend.push(titlePdfPath);
+      pdfSequence.push({ type: 'pdf', path: titlePdfPath, description: 'Title page' });
       report("Title page generated");
     } catch (e) {
       console.warn("Failed to generate title page:", e);
@@ -895,6 +978,9 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
   report("Collecting items");
   let isFirstItem = true;
   let lastWasHeading = false;
+  let currentPageCount = titlePageItem ? 1 : 1; // Track cumulative page count for TOC
+  // Note: pdfsToAppend already declared above
+  
   for (const it of items) {
     const accessed = (it.created_at ? new Date(it.created_at) : new Date());
     const accessedDate = accessed.toISOString().split("T")[0];
@@ -907,8 +993,12 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     }
     
     if (it.type === "heading") {
-      // Add heading as a standalone item with page break before it (unless it's first)
-      if (!isFirstItem) inputs.push(mdFile(workdir, `pagebreak-${nanoid(4)}.md`, `\\clearpage\n\n<div class="pagebreak"></div>\n`));
+      // Add heading without a page break - it will appear at the top of the next content
+      // Only add page break if there was previous content and it wasn't a heading
+      if (!isFirstItem && !lastWasHeading) {
+        inputs.push(mdFile(workdir, `pagebreak-${nanoid(4)}.md`, `\\clearpage\n\n<div class="pagebreak"></div>\n`));
+        currentPageCount += 1; // Page break adds a page
+      }
       const headingMd = `# ${it.title}\n\n`;
       inputs.push(mdFile(workdir, `heading-${it.id}.md`, headingMd));
       report(`Added Heading: ${it.title}`);
@@ -920,6 +1010,7 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     // Add page break before this item ONLY if it's not first and previous item wasn't a heading
     if (!isFirstItem && !lastWasHeading) {
       inputs.push(mdFile(workdir, `pagebreak-${nanoid(4)}.md`, `\\clearpage\n\n<div class="pagebreak"></div>\n`));
+      currentPageCount += 1; // Page break adds a page
     }
     lastWasHeading = false;  // Reset flag
 
@@ -932,43 +1023,50 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
       // Count pages for TOC
       const pageCount = await countPdfPages(abs);
       const pageInfo = pageCount ? ` (${pageCount} page${pageCount === 1 ? '' : 's'})` : '';
+      const tocPageInfo = showPageNumbers && pageCount ? ` (p. ${currentPageCount})` : '';
       
-      // Add TOC entry with page count
-      itemMd += `# ${it.title}${pageInfo}\n\n`;
-      
-      // For Markdown and EPUB exports, try to extract and include PDF text
+      // For Markdown and EPUB exports, extract text and include in document flow
       if (format === "markdown" || format === "epub") {
+        // Add TOC entry with page count
+        itemMd += `# ${it.title}${pageInfo}\n\n`;
+        
         report(`Extracting text from PDF: ${path.basename(abs)}...`);
         const extractedText = await extractPdfText(abs);
-        if (extractedText && extractedText.trim().length > 50) { // Must have substantial content
+        if (extractedText && await pdfHasExtractableText(abs)) {
           itemMd += `*Text extracted from PDF: ${path.basename(abs)}*\n\n`;
-          
-          // Format the extracted text nicely
-          const formattedText = extractedText
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0)
-            .join('\n\n'); // Double space for better paragraph separation
-          
-          itemMd += `${formattedText}\n\n`;
+          itemMd += `${extractedText}\n\n`;
           itemMd += `---\n\n`; // Add separator
           report(`✓ Added PDF with extracted text (${extractedText.length} chars): ${it.title}${pageInfo}`);
         } else {
           itemMd += `*PDF Document: ${path.basename(abs)} - Text extraction not available (may be scanned/image-based)*\n\n`;
           report(`⚠️ Added PDF (no extractable text): ${it.title}${pageInfo}`);
         }
+        
+        const titled = mdFile(workdir, `pdf-${it.id}-titled.md`, itemMd);
+        inputs.push(titled);
+        
+        // For markdown/epub, we estimate 1 page per PDF since we're including text
+        currentPageCount += 1;
       } else {
-        // For PDF exports, just add a placeholder since we'll append the actual PDF
-        itemMd += `*PDF Document: ${path.basename(abs)}*\n\n`;
-        report(`Added PDF placeholder: ${it.title}${pageInfo}`);
-      }
-      
-      const titled = mdFile(workdir, `pdf-${it.id}-titled.md`, itemMd);
-      inputs.push(titled);
-      
-      // For PDF exports, queue the actual PDF for appending at the end
-      if (format === "pdf") {
-        pdfsToAppend.push(abs);
+        // For PDF exports, we need to handle this specially
+        // If we have accumulated markdown content, we need to mark where to render it
+        if (inputs.length > 0) {
+          pdfSequence.push({ type: 'markdown', inputs: [...inputs], description: 'Markdown content batch' });
+          inputs.length = 0; // Clear inputs array for next batch
+          hasMarkdownContent = true;
+        }
+        
+        // Add the actual PDF to the sequence
+        pdfSequence.push({ type: 'pdf', path: abs, description: it.title });
+        
+        // Update page count for TOC
+        if (pageCount) {
+          currentPageCount += pageCount;
+        } else {
+          currentPageCount += 1; // Estimate if we can't count pages
+        }
+        
+        report(`Added PDF in sequence: ${it.title}`);
       }
       
       isFirstItem = false;
@@ -981,7 +1079,6 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
       
       // Count pages for TOC
       const pageCount = await countDocxPages(abs);
-      const pageInfo = pageCount ? ` (${pageCount} page${pageCount === 1 ? '' : 's'})` : '';
       
       const out = path.join(workdir, `docx-${it.id}.md`);
       // Convert DOCX to Markdown using Pandoc
@@ -989,12 +1086,20 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
         await run("pandoc", [inputDocx, "-f", "docx", "-t", "gfm", "-o", outputMd]);
       }
       await convertDocxToMd(abs, out);
-      itemMd += `# ${it.title}${pageInfo}\n\n` + fs.readFileSync(out, "utf8");
+      itemMd += `# ${it.title}\n\n` + fs.readFileSync(out, "utf8");
       const titled = mdFile(workdir, `docx-${it.id}-titled.md`, itemMd);
       const res = await scrubMarkdownForPdf(titled, workdir);
       if (res.hadSvg) sawAnySvg = true;
       inputs.push(titled);
-      report(`Added DOCX: ${it.title}${pageInfo}`);
+      
+      // Update page count for TOC
+      if (pageCount) {
+        currentPageCount += pageCount;
+      } else {
+        currentPageCount += 1; // Estimate if we can't count pages
+      }
+      
+      report(`Added DOCX: ${it.title}`);
       isFirstItem = false;
       continue;
     }
@@ -1008,6 +1113,10 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
         const res = await scrubMarkdownForPdf(titled, workdir);
         if (res.hadSvg) sawAnySvg = true;
         inputs.push(titled);
+        
+        // Estimate 1-2 pages for URL content
+        currentPageCount += 2;
+        
         report(`Added URL: ${it.title}`);
         if (it.type === "url" && it.source_url && !isWikipedia(it.source_url)) {
           nonWikiAttribution.push({ kind: "web", title: it.title || "", url: it.source_url, accessed: accessedDate });
@@ -1058,6 +1167,10 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
       if (caption) itemMd += `*${caption}*\n\n`;
       const imgMd = mdFile(workdir, `image-${it.id}.md`, itemMd);
       inputs.push(imgMd);
+      
+      // Images typically don't take a full page, but we increment slightly for TOC tracking
+      currentPageCount += 0.5;
+      
       report(`Added image: ${it.title}`);
       isFirstItem = false;
       continue;
@@ -1104,15 +1217,6 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     report("Added sources");
   }
 
-  let engines = [];
-  if (format === "pdf") {
-    const haveTe = whichExists("tectonic");
-    const haveXe = whichExists("xelatex");
-    if (haveTe) engines.push("tectonic");
-    if (haveXe) engines.push("xelatex");
-    if (!engines.length) throw new Error("No PDF engine detected. Install tectonic or xelatex.");
-  }
-
   function fixAbsoluteImagePaths(workdir) {
     const mdFiles = fs.readdirSync(workdir).filter(f => f.endsWith('.md'));
     for (const f of mdFiles) {
@@ -1127,7 +1231,8 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
   async function tryPandoc(engineOrNull) {
     fixAbsoluteImagePaths(workdir);
     logImageDiagnostics(workdir);
-    report(`Rendering ${format.toUpperCase()} with ${engineOrNull || "default"} engine`);
+    const engineName = engineOrNull ? (path.basename(engineOrNull) === engineOrNull ? engineOrNull : path.basename(engineOrNull)) : "default";
+    report(`Rendering ${format.toUpperCase()} with ${engineName} engine`);
     const args = buildPandocArgs({ meta, workdir, cssPath, includeToc, format, engine: engineOrNull, outPath, inputs });
     return run("pandoc", args);
   }
@@ -1158,35 +1263,81 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     await tryPandoc(null);
     report("Pandoc render complete");
   } else {
-    let lastErr = null;
-    for (const eng of engines) {
-      try { await tryPandoc(eng); lastErr = null; break; } catch (e) { lastErr = e; }
-    }
-    if (lastErr) throw lastErr;
-    report("Pandoc render complete");
-  }
-
-  if (format === "pdf" && (pdfsToPrepend.length || pdfsToAppend.length)) {
-    const allPdfs = [...pdfsToPrepend, outPath, ...pdfsToAppend];
-    if (pdfsToPrepend.length) {
-      report("Prepending title page");
-    }
-    if (pdfsToAppend.length) {
-      report("Appending PDFs");
+    // PDF format with ordered sequence handling
+    
+    // If there are remaining markdown inputs, add them to the sequence
+    if (inputs.length > 0) {
+      pdfSequence.push({ type: 'markdown', inputs: [...inputs], description: 'Final markdown content' });
+      hasMarkdownContent = true;
     }
     
-    const merged = path.join(EXPORTS_DIR, `${outBase}-merged.pdf`);
-    if (whichExists("qpdf")) {
-      await runOk("qpdf", ["--warning-exit-0", "--empty", "--pages", ...allPdfs, "--", merged], [0,2,3]);
-      fs.renameSync(merged, outPath);
-    } else if (whichExists("pdfunite")) {
-      await run("pdfunite", allPdfs.concat(merged));
-      fs.renameSync(merged, outPath);
-    } else if (whichExists("gs")) {
-      await run("gs", ["-dBATCH","-dNOPAUSE","-sDEVICE=pdfwrite", `-sOutputFile=${merged}`, ...allPdfs]);
-      fs.renameSync(merged, outPath);
-    } else {
-      console.warn("No PDF merger (qpdf/pdfunite/gs) found; skipping PDF prepend/append/merge.");
+    // Now render all markdown batches and build final PDF sequence
+    const finalPdfSequence = [];
+    let batchCounter = 0;
+    
+    for (const item of pdfSequence) {
+      if (item.type === 'pdf') {
+        // Just add the PDF path to final sequence
+        finalPdfSequence.push(item.path);
+      } else if (item.type === 'markdown') {
+        // Render this batch of markdown to a temporary PDF
+        const batchPdfPath = path.join(workdir, `batch-${batchCounter}.pdf`);
+        report(`Rendering markdown batch: ${item.description}`);
+        
+        // Only include ToC in the first batch
+        const includeToC = batchCounter === 0 && includeToc;
+        batchCounter++;
+        
+        // Try each engine until one works
+        let lastErr = null;
+        for (const eng of engines) {
+          const enginePath = enginePaths[eng];
+          try {
+            const batchArgs = buildPandocArgs({ 
+              meta, 
+              workdir, 
+              cssPath, 
+              includeToc: includeToC, 
+              format, 
+              engine: enginePath, 
+              outPath: batchPdfPath, 
+              inputs: item.inputs 
+            });
+            await run("pandoc", batchArgs);
+            lastErr = null;
+            break;
+          } catch (e) { 
+            lastErr = e; 
+          }
+        }
+        if (lastErr) throw lastErr;
+        
+        finalPdfSequence.push(batchPdfPath);
+      }
+    }
+    
+    report("Pandoc rendering complete");
+
+    // Merge all PDFs in the correct order if we have multiple components
+    if (finalPdfSequence.length > 1) {
+      report(`Merging ${finalPdfSequence.length} PDF components in order`);
+      
+      const merged = path.join(EXPORTS_DIR, `${outBase}-merged.pdf`);
+      if (whichExists("qpdf")) {
+        await runOk("qpdf", ["--warning-exit-0", "--empty", "--pages", ...finalPdfSequence, "--", merged], [0,2,3]);
+        fs.renameSync(merged, outPath);
+      } else if (whichExists("pdfunite")) {
+        await run("pdfunite", finalPdfSequence.concat(merged));
+        fs.renameSync(merged, outPath);
+      } else if (whichExists("gs")) {
+        await run("gs", ["-dBATCH","-dNOPAUSE","-sDEVICE=pdfwrite", `-sOutputFile=${merged}`, ...finalPdfSequence]);
+        fs.renameSync(merged, outPath);
+      } else {
+        console.warn("No PDF merger (qpdf/pdfunite/gs) found; skipping PDF merge.");
+      }
+    } else if (finalPdfSequence.length === 1) {
+      // Only one component, just copy it to output
+      fs.copyFileSync(finalPdfSequence[0], outPath);
     }
   }
 
@@ -1200,7 +1351,7 @@ app.get("/api/projects", (_req, res) => {
   res.json(rows.map(r => ({ ...r, options: safeParseJSON(r.options_json, {}) })));
 });
 
-app.post("/api/projects", (req, res) => {
+app.post("/api/projects", requireAuth, (req, res) => {
   const id = nanoid(10);
   const name = (req.body.name || "Untitled Project").trim();
   const options = req.body.options || { showPageNumbers: true, includeToc: true };
@@ -1231,7 +1382,7 @@ app.get("/api/projects/:id", (req, res) => {
   });
 });
 
-app.put("/api/projects/:id", (req, res) => {
+app.put("/api/projects/:id", requireAuth, (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Not found" });
   const actor = req.session.user?.username || p.author_username || "andrew";
@@ -1286,6 +1437,75 @@ app.get("/api/projects/:id/version-log", (req, res) => {
   
   // Return in reverse chronological order (newest first) for display
   res.json(versionLogs.reverse());
+});
+
+// Comments endpoints
+app.get("/api/projects/:id/comments", (req, res) => {
+  const p = getProject.get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  
+  const comments = db.prepare(`
+    SELECT c.id, c.project_id, c.user_id, c.comment_text, c.created_at, c.updated_at,
+           u.first_name, u.last_name, u.affiliation
+    FROM comments c
+    JOIN users u ON c.user_id = u.username
+    WHERE c.project_id = ?
+    ORDER BY c.created_at DESC
+  `).all(req.params.id);
+  
+  res.json(comments);
+});
+
+app.post("/api/projects/:id/comments", requireAuth, express.json(), (req, res) => {
+  const p = getProject.get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  
+  const { comment_text } = req.body;
+  if (!comment_text || !comment_text.trim()) {
+    return res.status(400).json({ error: "Comment text is required" });
+  }
+  
+  const commentId = nanoid(12);
+  const now = nowISO();
+  
+  try {
+    db.prepare(`
+      INSERT INTO comments (id, project_id, user_id, comment_text, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(commentId, req.params.id, req.session.user.username, comment_text.trim(), now, now);
+    
+    // Return the new comment with user info
+    const newComment = db.prepare(`
+      SELECT c.id, c.project_id, c.user_id, c.comment_text, c.created_at, c.updated_at,
+             u.first_name, u.last_name, u.affiliation
+      FROM comments c
+      JOIN users u ON c.user_id = u.username
+      WHERE c.id = ?
+    `).get(commentId);
+    
+    res.json(newComment);
+  } catch (err) {
+    console.error("Error creating comment:", err);
+    res.status(500).json({ error: "Failed to create comment" });
+  }
+});
+
+app.delete("/api/comments/:commentId", requireAuth, (req, res) => {
+  const comment = db.prepare(`SELECT user_id FROM comments WHERE id = ?`).get(req.params.commentId);
+  if (!comment) return res.status(404).json({ error: "Comment not found" });
+  
+  // Only allow deletion by comment author or admin
+  if (comment.user_id !== req.session.user.username && !req.session.user.is_admin) {
+    return res.status(403).json({ error: "Not authorized to delete this comment" });
+  }
+  
+  try {
+    db.prepare(`DELETE FROM comments WHERE id = ?`).run(req.params.commentId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error deleting comment:", err);
+    res.status(500).json({ error: "Failed to delete comment" });
+  }
 });
 
 app.post("/api/projects/:id/copy", requireAuth, (req, res) => {
@@ -1381,7 +1601,7 @@ app.post("/api/projects/:id/copy", requireAuth, (req, res) => {
   }
 });
 
-app.delete("/api/projects/:id", (req, res) => {
+app.delete("/api/projects/:id", requireAuth, (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   
@@ -1478,7 +1698,7 @@ app.put("/api/profile", requireAuth, (req, res) => {
 });
 
 // Create item (url, wikipedia, heading, image)
-app.post("/api/projects/:id/items", (req, res) => {
+app.post("/api/projects/:id/items", requireAuth, (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   const items = getItems.all(p.id);
@@ -1505,7 +1725,7 @@ app.post("/api/projects/:id/items", (req, res) => {
 });
 
 // Upload item (docx, pdf, image) — store only filename in DB
-app.post("/api/projects/:id/items/upload", upload.single("file"), (req, res) => {
+app.post("/api/projects/:id/items/upload", requireAuth, upload.single("file"), (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   const file = req.file;
@@ -1528,7 +1748,7 @@ app.post("/api/projects/:id/items/upload", upload.single("file"), (req, res) => 
 });
 
 // Reorder items in a project
-app.put("/api/projects/:id/items/reorder", (req, res) => {
+app.put("/api/projects/:id/items/reorder", requireAuth, (req, res) => {
   const order = req.body.order; // [{id, position}, ...]
   if (!Array.isArray(order)) return res.status(400).json({ error: "Bad payload" });
   const tx = db.transaction((rows) => {
@@ -1539,7 +1759,7 @@ app.put("/api/projects/:id/items/reorder", (req, res) => {
 });
 
 // Update item in a project (PATCH)
-app.patch("/api/projects/:id/items/:itemId", express.json(), (req, res) => {
+app.patch("/api/projects/:id/items/:itemId", requireAuth, express.json(), (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   const itemId = req.params.itemId;
@@ -1581,7 +1801,7 @@ app.patch("/api/projects/:id/items/:itemId", express.json(), (req, res) => {
 });
 
 // Delete item in a project
-app.delete("/api/projects/:id/items/:itemId", (req, res) => {
+app.delete("/api/projects/:id/items/:itemId", requireAuth, (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   const itemId = req.params.itemId;
