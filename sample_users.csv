@@ -1,0 +1,5 @@
+username,password,first_name,last_name,affiliation,email,is_admin
+jsmith,password123,John,Smith,Harvard University,jsmith@harvard.edu,0
+mjones,password456,Mary,Jones,MIT,mjones@mit.edu,0
+rdoe,password789,Robert,Doe,Stanford University,rdoe@stanford.edu,0
+sbrown,passwordabc,Sarah,Brown,UC Berkeley,sbrown@berkeley.edu,0

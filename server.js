@@ -1739,6 +1739,101 @@ app.post("/api/admin/users", requireAuth, express.json(), (req, res) => {
   }
 });
 
+// Bulk upload users from CSV (admin only)
+app.post("/api/admin/users/bulk", requireAuth, upload.single('csvFile'), (req, res) => {
+  // Check if current user is admin
+  if (!req.session.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  
+  if (!req.file) {
+    return res.status(400).json({ error: "No CSV file uploaded" });
+  }
+  
+  try {
+    const csvContent = fs.readFileSync(req.file.path, 'utf-8');
+    const lines = csvContent.split('\n').map(l => l.trim()).filter(Boolean);
+    
+    if (lines.length < 2) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: "CSV file must contain a header row and at least one data row" });
+    }
+    
+    // Parse header
+    const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const requiredFields = ['username', 'password'];
+    const missingFields = requiredFields.filter(f => !header.includes(f));
+    
+    if (missingFields.length > 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: `Missing required columns: ${missingFields.join(', ')}` });
+    }
+    
+    const results = { created: 0, skipped: 0, errors: [] };
+    const now = new Date().toISOString();
+    
+    // Process each data row
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',').map(v => v.trim());
+      const row = {};
+      
+      header.forEach((field, idx) => {
+        row[field] = values[idx] || '';
+      });
+      
+      // Validate required fields
+      if (!row.username || !row.password) {
+        results.errors.push(`Row ${i + 1}: Missing username or password`);
+        results.skipped++;
+        continue;
+      }
+      
+      try {
+        // Check if user already exists
+        const existing = db.prepare(`SELECT username FROM users WHERE username=?`).get(row.username);
+        if (existing) {
+          results.errors.push(`Row ${i + 1}: Username '${row.username}' already exists`);
+          results.skipped++;
+          continue;
+        }
+        
+        // Create the user
+        const stmt = db.prepare(`INSERT INTO users (username, password, first_name, last_name, affiliation, email, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        stmt.run(
+          row.username,
+          row.password,
+          row.first_name || '',
+          row.last_name || '',
+          row.affiliation || '',
+          row.email || '',
+          (row.is_admin === '1' || row.is_admin?.toLowerCase() === 'true') ? 1 : 0,
+          now,
+          now
+        );
+        
+        results.created++;
+      } catch (err) {
+        console.error(`Error creating user from row ${i + 1}:`, err);
+        results.errors.push(`Row ${i + 1}: ${err.message}`);
+        results.skipped++;
+      }
+    }
+    
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+    
+    res.json({
+      ok: true,
+      message: `Bulk upload complete: ${results.created} created, ${results.skipped} skipped`,
+      results
+    });
+  } catch (err) {
+    console.error("Error processing CSV:", err);
+    if (req.file?.path) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: "Failed to process CSV file: " + err.message });
+  }
+});
+
 app.get("/api/profile", requireAuth, (req, res) => {
   const u = db.prepare(`SELECT username,first_name,last_name,affiliation,email,is_admin FROM users WHERE username=?`).get(req.session.user.username);
   res.json(u);

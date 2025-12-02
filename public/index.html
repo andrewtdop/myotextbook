@@ -215,6 +215,37 @@
         </div>
       </section>
 
+      <!-- Comments Section: only show in project view -->
+      <section id="commentsSection" class="hidden">
+        <h3 class="font-semibold mt-6 mb-3 text-red-600">Comments</h3>
+        
+        <!-- Comment form for logged-in users -->
+        <div id="commentForm" class="bg-gray-50 p-4 rounded border mb-4">
+          <form id="addCommentForm" class="space-y-3">
+            <textarea id="commentText" 
+                      class="w-full border border-gray-300 rounded px-3 py-2 bg-white text-black"
+                      rows="3" 
+                      placeholder="Add a comment..."></textarea>
+            <div class="flex justify-end">
+              <button type="submit" 
+                      class="px-4 py-2 rounded bg-red-600 hover:bg-red-700 text-white">
+                Post Comment
+              </button>
+            </div>
+          </form>
+        </div>
+        
+        <!-- Comments list -->
+        <div id="commentsList" class="space-y-3">
+          <!-- Comments will be loaded here -->
+        </div>
+        
+        <!-- Empty state -->
+        <div id="commentsEmpty" class="text-gray-500 text-center py-6 hidden">
+          No comments yet. Be the first to comment!
+        </div>
+      </section>
+
       <!-- Version History: only show in editor/project view -->
       <h3 class="font-semibold mt-6 mb-2 text-red-600">Version History</h3>
       <table class="w-full text-sm border">
@@ -270,8 +301,16 @@
 
 <!-- Admin: Add User Modal -->
 <div id="addUserModal" class="fixed inset-0 hidden items-center justify-center bg-black/40">
-  <div class="w-[min(92vw,520px)] rounded bg-white p-5">
-    <h2 class="text-lg font-semibold mb-3">Add User</h2>
+  <div class="w-[min(92vw,640px)] rounded bg-white p-5">
+    <h2 class="text-lg font-semibold mb-3">Add User(s)</h2>
+    
+    <!-- Tab Buttons -->
+    <div class="flex gap-2 mb-4 border-b">
+      <button type="button" id="singleUserTab" class="px-4 py-2 border-b-2 border-red-600 font-semibold text-red-600">Single User</button>
+      <button type="button" id="bulkUploadTab" class="px-4 py-2 text-gray-600 hover:text-red-600">Bulk CSV Upload</button>
+    </div>
+    
+    <!-- Single User Form -->
     <form id="addUserForm" class="space-y-2">
       <input name="username" class="w-full border rounded px-3 py-2" placeholder="Username"/>
       <input name="password" class="w-full border rounded px-3 py-2" placeholder="Password"/>
@@ -283,6 +322,26 @@
       <div class="flex justify-end gap-2 mt-2">
         <button type="button" id="addUserClose" class="px-3 py-1.5 rounded border">Close</button>
         <button class="px-3 py-1.5 rounded bg-red-600 text-white">Create</button>
+      </div>
+    </form>
+    
+    <!-- Bulk CSV Upload Form -->
+    <form id="bulkUploadForm" class="space-y-3 hidden">
+      <div class="bg-gray-50 border rounded p-3 text-sm">
+        <p class="font-semibold mb-2">CSV Format:</p>
+        <p class="text-gray-700 mb-2">Upload a CSV file with the following columns (header row required):</p>
+        <code class="block bg-white border rounded px-2 py-1 text-xs">username,password,first_name,last_name,affiliation,email,is_admin</code>
+        <p class="text-gray-600 mt-2 text-xs">Example: <code>jsmith,pass123,John,Smith,Harvard,jsmith@harvard.edu,0</code></p>
+        <p class="text-gray-600 text-xs">Note: is_admin should be 0 (false) or 1 (true)</p>
+      </div>
+      
+      <input type="file" name="csvFile" accept=".csv" class="w-full border rounded px-3 py-2" required/>
+      
+      <div id="bulkUploadStatus" class="hidden text-sm"></div>
+      
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" id="bulkUploadClose" class="px-3 py-1.5 rounded border">Close</button>
+        <button type="submit" class="px-3 py-1.5 rounded bg-red-600 text-white">Upload CSV</button>
       </div>
     </form>
   </div>

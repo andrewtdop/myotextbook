@@ -33,9 +33,67 @@ let currentUser = null;
 
 async function refreshMe() {
   currentUser = await fetchJSON("/api/me").catch(()=>null);
-  // toggle admin button
+  
+  // Toggle admin button
   const addUserBtn = $("#addUserBtn");
   if (addUserBtn) addUserBtn.classList.toggle("hidden", !(currentUser?.is_admin));
+  
+  // Toggle UI elements based on authentication status
+  updateUIForAuthStatus();
+}
+
+function updateUIForAuthStatus() {
+  const isLoggedIn = !!currentUser;
+  
+  // Hide/show elements based on auth status
+  const newProjectBtn = $("#newProjectBtn");
+  const saveProjectBtn = $("#saveProjectBtn");
+  const addContentForm = $("#addContentForm");
+  const commentForm = $("#commentForm");
+  
+  // For anonymous users, hide creation/editing features
+  if (newProjectBtn) newProjectBtn.style.display = isLoggedIn ? 'block' : 'none';
+  if (saveProjectBtn) saveProjectBtn.style.display = isLoggedIn ? 'block' : 'none';
+  if (addContentForm) addContentForm.style.display = isLoggedIn ? 'block' : 'none';
+  if (commentForm) commentForm.style.display = isLoggedIn ? 'block' : 'none';
+  
+  // Note: Copy & Edit button visibility is handled separately in openProject()
+  // based on project ownership logic
+  
+  // Show login prompt for anonymous users in project view
+  showLoginPrompts(!isLoggedIn);
+}
+
+function showLoginPrompts(show) {
+  // Remove existing login prompts
+  document.querySelectorAll('.login-prompt').forEach(el => el.remove());
+  
+  if (!show) return;
+  
+  // Add login prompt to editor section
+  const editorSection = $("#editor");
+  if (editorSection && !editorSection.classList.contains('hidden')) {
+    const prompt = document.createElement('div');
+    prompt.className = 'login-prompt bg-gray-50 border border-gray-200 rounded p-4 mb-4';
+    prompt.innerHTML = `
+      <div class="flex items-center gap-2">
+        <svg class="w-5 h-5 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+        </svg>
+        <div>
+          <p class="text-gray-800 font-medium">Login Required</p>
+          <p class="text-gray-700 text-sm">You can view and export this project, but you need to <strong>log in</strong> to edit, comment, or create projects.</p>
+        </div>
+      </div>
+    `;
+    
+    // Insert at the top of editor section - safer approach
+    if (editorSection.firstChild) {
+      editorSection.insertBefore(prompt, editorSection.firstChild);
+    } else {
+      editorSection.appendChild(prompt);
+    }
+  }
 }
 
 // Dashboard
@@ -250,6 +308,9 @@ async function openProject(id){
         tbody.append(tr);
       }
     }
+    
+    // Load comments
+    await loadComments(id);
     // ---------------------------------------------------------------------------
 
     await renderItems();
@@ -271,6 +332,10 @@ function goToProjects() {
 function bindGlobalUI(){
   // New project
   newProjectBtn?.addEventListener("click", async () => {
+    if (!currentUser) {
+      alert("Please log in to create projects");
+      return;
+    }
     const name = prompt("Name your project:", "Untitled Project");
     if (name == null) return;
     const p = await fetchJSON("/api/projects", {
@@ -358,11 +423,42 @@ function bindGlobalUI(){
   $("#addUserBtn")?.addEventListener("click", ()=>{
     $("#addUserModal")?.classList.remove("hidden");
     $("#addUserModal")?.classList.add("flex");
+    // Reset to single user tab
+    showSingleUserTab();
   });
   $("#addUserClose")?.addEventListener("click", ()=>{
     $("#addUserModal")?.classList.add("hidden");
     $("#addUserModal")?.classList.remove("flex");
   });
+  $("#bulkUploadClose")?.addEventListener("click", ()=>{
+    $("#addUserModal")?.classList.add("hidden");
+    $("#addUserModal")?.classList.remove("flex");
+  });
+  
+  // Tab switching for Add User modal
+  function showSingleUserTab() {
+    $("#addUserForm")?.classList.remove("hidden");
+    $("#bulkUploadForm")?.classList.add("hidden");
+    $("#singleUserTab")?.classList.add("border-red-600", "text-red-600", "font-semibold");
+    $("#singleUserTab")?.classList.remove("text-gray-600");
+    $("#bulkUploadTab")?.classList.remove("border-red-600", "text-red-600", "font-semibold");
+    $("#bulkUploadTab")?.classList.add("text-gray-600");
+    $("#bulkUploadStatus")?.classList.add("hidden");
+  }
+  
+  function showBulkUploadTab() {
+    $("#addUserForm")?.classList.add("hidden");
+    $("#bulkUploadForm")?.classList.remove("hidden");
+    $("#bulkUploadTab")?.classList.add("border-red-600", "text-red-600", "font-semibold");
+    $("#bulkUploadTab")?.classList.remove("text-gray-600");
+    $("#singleUserTab")?.classList.remove("border-red-600", "text-red-600", "font-semibold");
+    $("#singleUserTab")?.classList.add("text-gray-600");
+  }
+  
+  $("#singleUserTab")?.addEventListener("click", showSingleUserTab);
+  $("#bulkUploadTab")?.addEventListener("click", showBulkUploadTab);
+  
+  // Single user form submission
   $("#addUserForm")?.addEventListener("submit", async (e)=>{
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -372,11 +468,63 @@ function bindGlobalUI(){
       await fetchJSON("/api/admin/users", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
       $("#addUserModal")?.classList.add("hidden"); $("#addUserModal")?.classList.remove("flex");
       alert("User created.");
+      e.target.reset();
     } catch (err) { alert(err.message); }
+  });
+  
+  // Bulk CSV upload form submission
+  $("#bulkUploadForm")?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const statusDiv = $("#bulkUploadStatus");
+    
+    try {
+      if (statusDiv) {
+        statusDiv.textContent = "Uploading and processing CSV...";
+        statusDiv.className = "text-gray-700 bg-gray-100 p-2 rounded";
+        statusDiv.classList.remove("hidden");
+      }
+      
+      const res = await fetch("/api/admin/users/bulk", { method: "POST", body: fd });
+      const result = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(result.error || "Upload failed");
+      }
+      
+      if (statusDiv) {
+        let msg = `✓ ${result.message}\n`;
+        if (result.results?.errors?.length > 0) {
+          msg += `\nErrors/Warnings:\n${result.results.errors.join('\n')}`;
+        }
+        statusDiv.textContent = msg;
+        statusDiv.className = "text-green-700 bg-green-50 p-3 rounded border border-green-200 whitespace-pre-wrap text-sm";
+      }
+      
+      e.target.reset();
+      
+      // Auto-close after 3 seconds if no errors
+      if (!result.results?.errors?.length) {
+        setTimeout(() => {
+          $("#addUserModal")?.classList.add("hidden");
+          $("#addUserModal")?.classList.remove("flex");
+        }, 3000);
+      }
+    } catch (err) {
+      console.error("Bulk upload error:", err);
+      if (statusDiv) {
+        statusDiv.textContent = `✗ Error: ${err.message}`;
+        statusDiv.className = "text-red-700 bg-red-50 p-2 rounded border border-red-200";
+      }
+    }
   });
 
   // Save project (name + options + keywords)
   saveProjectBtn?.addEventListener("click", async () => {
+    if (!currentUser) {
+      alert("Please log in to save projects");
+      return;
+    }
     if (!currentProject) return;
 
     const keywordsCsv = parseKeywordsCSV(projectKeywords?.value);
@@ -408,6 +556,10 @@ function bindGlobalUI(){
   // Unified Add Content form
   addContentForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!currentUser) {
+      alert("Please log in to add content");
+      return;
+    }
     if (!currentProject) return;
 
     const fd       = new FormData(addContentForm);
@@ -763,3 +915,142 @@ function ensureSortable(){
 
   $$("#itemsTbody tr").forEach(tr => { if (!tr.id) tr.id = tr.dataset.id || ""; });
 }
+
+// ===================== Comments System =====================
+async function loadComments(projectId) {
+  const commentsSection = $("#commentsSection");
+  const commentsList = $("#commentsList");
+  const commentsEmpty = $("#commentsEmpty");
+  const commentForm = $("#commentForm");
+  
+  if (!commentsSection) return;
+  
+  try {
+    const comments = await fetchJSON(`/api/projects/${projectId}/comments`);
+    
+    // Show comments section
+    commentsSection.classList.remove("hidden");
+    
+    // Show/hide comment form based on auth
+    if (commentForm) {
+      commentForm.style.display = currentUser ? 'block' : 'none';
+    }
+    
+    // Clear existing comments
+    commentsList.innerHTML = '';
+    
+    if (comments.length === 0) {
+      commentsEmpty.classList.remove("hidden");
+      return;
+    }
+    
+    commentsEmpty.classList.add("hidden");
+    
+    // Render comments
+    for (const comment of comments) {
+      const commentEl = createCommentElement(comment);
+      commentsList.appendChild(commentEl);
+    }
+  } catch (err) {
+    console.error("Failed to load comments:", err);
+  }
+}
+
+function createCommentElement(comment) {
+  const commentDiv = el("div", { 
+    className: "border border-gray-200 rounded p-4 bg-white"
+  });
+  commentDiv.dataset.commentId = comment.id;
+  
+  const header = el("div", { className: "flex justify-between items-start mb-2" });
+  
+  const userInfo = el("div", { className: "text-sm text-gray-600" });
+  const displayName = [comment.first_name, comment.last_name].filter(Boolean).join(' ') || comment.user_id;
+  userInfo.textContent = `${displayName}${comment.affiliation ? ` (${comment.affiliation})` : ''} • ${new Date(comment.created_at).toLocaleString()}`;
+  
+  header.appendChild(userInfo);
+  
+  // Add delete button for comment author or admin
+  if (currentUser && (currentUser.username === comment.user_id || currentUser.is_admin)) {
+    const deleteBtn = el("button", {
+      className: "text-red-600 hover:text-red-800 text-sm",
+      textContent: "Delete"
+    });
+    deleteBtn.addEventListener("click", () => deleteComment(comment.id));
+    header.appendChild(deleteBtn);
+  }
+  
+  const commentText = el("div", { 
+    className: "text-gray-800",
+    textContent: comment.comment_text 
+  });
+  
+  commentDiv.appendChild(header);
+  commentDiv.appendChild(commentText);
+  
+  return commentDiv;
+}
+
+async function deleteComment(commentId) {
+  if (!confirm("Are you sure you want to delete this comment?")) return;
+  
+  try {
+    await fetchJSON(`/api/comments/${commentId}`, { method: "DELETE" });
+    
+    // Remove from UI
+    const commentEl = $(`[data-comment-id="${commentId}"]`);
+    if (commentEl) commentEl.remove();
+    
+    // Check if we need to show empty state
+    const commentsList = $("#commentsList");
+    const commentsEmpty = $("#commentsEmpty");
+    if (commentsList && commentsList.children.length === 0) {
+      commentsEmpty?.classList.remove("hidden");
+    }
+  } catch (err) {
+    console.error("Failed to delete comment:", err);
+    alert("Failed to delete comment: " + err.message);
+  }
+}
+
+// Comment form event listener
+$("#addCommentForm")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  
+  if (!currentUser) {
+    alert("Please log in to comment");
+    return;
+  }
+  
+  if (!currentProject) return;
+  
+  const commentText = $("#commentText");
+  if (!commentText || !commentText.value.trim()) {
+    alert("Please enter a comment");
+    return;
+  }
+  
+  try {
+    const newComment = await fetchJSON(`/api/projects/${currentProject.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comment_text: commentText.value.trim() })
+    });
+    
+    // Clear form
+    commentText.value = '';
+    
+    // Add to UI
+    const commentsList = $("#commentsList");
+    const commentsEmpty = $("#commentsEmpty");
+    
+    if (commentsEmpty) commentsEmpty.classList.add("hidden");
+    
+    const commentEl = createCommentElement(newComment);
+    commentsList.insertBefore(commentEl, commentsList.firstChild); // Add to top
+    
+  } catch (err) {
+    console.error("Failed to post comment:", err);
+    alert("Failed to post comment: " + err.message);
+  }
+});
