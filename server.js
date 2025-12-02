@@ -388,6 +388,54 @@ function findPdfEngine(engineName) {
   return null;
 }
 
+// Try to find a PDF merger tool in PATH or common locations
+function findPdfMerger() {
+  // Common installation paths for PDF merger tools
+  const tools = {
+    'qpdf': [
+      '/usr/bin/qpdf',
+      '/usr/local/bin/qpdf',
+      '/opt/homebrew/bin/qpdf'
+    ],
+    'pdfunite': [
+      '/usr/bin/pdfunite',
+      '/usr/local/bin/pdfunite',
+      '/opt/homebrew/bin/pdfunite'
+    ],
+    'gs': [
+      '/usr/bin/gs',
+      '/usr/local/bin/gs',
+      '/opt/homebrew/bin/gs'
+    ]
+  };
+  
+  for (const [tool, paths] of Object.entries(tools)) {
+    // First try PATH
+    if (whichExists(tool)) {
+      return { tool, path: tool };
+    }
+    
+    // Then try common locations
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) {
+          // Verify it's executable
+          try {
+            fs.accessSync(p, fs.constants.X_OK);
+            return { tool, path: p };
+          } catch {
+            // Not executable, continue
+          }
+        }
+      } catch {
+        // Path doesn't exist, continue
+      }
+    }
+  }
+  
+  return null;
+}
+
 // Count pages in PDF file
 async function countPdfPages(pdfPath) {
   try {
@@ -1323,17 +1371,21 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
       report(`Merging ${finalPdfSequence.length} PDF components in order`);
       
       const merged = path.join(EXPORTS_DIR, `${outBase}-merged.pdf`);
-      if (whichExists("qpdf")) {
-        await runOk("qpdf", ["--warning-exit-0", "--empty", "--pages", ...finalPdfSequence, "--", merged], [0,2,3]);
-        fs.renameSync(merged, outPath);
-      } else if (whichExists("pdfunite")) {
-        await run("pdfunite", finalPdfSequence.concat(merged));
-        fs.renameSync(merged, outPath);
-      } else if (whichExists("gs")) {
-        await run("gs", ["-dBATCH","-dNOPAUSE","-sDEVICE=pdfwrite", `-sOutputFile=${merged}`, ...finalPdfSequence]);
-        fs.renameSync(merged, outPath);
-      } else {
+      const merger = findPdfMerger();
+      
+      if (!merger) {
         throw new Error("PDF merge required but no PDF merger tool found. Please install qpdf, pdfunite (poppler-utils), or ghostscript (gs).");
+      }
+      
+      if (merger.tool === "qpdf") {
+        await runOk(merger.path, ["--warning-exit-0", "--empty", "--pages", ...finalPdfSequence, "--", merged], [0,2,3]);
+        fs.renameSync(merged, outPath);
+      } else if (merger.tool === "pdfunite") {
+        await run(merger.path, finalPdfSequence.concat(merged));
+        fs.renameSync(merged, outPath);
+      } else if (merger.tool === "gs") {
+        await run(merger.path, ["-dBATCH","-dNOPAUSE","-sDEVICE=pdfwrite", `-sOutputFile=${merged}`, ...finalPdfSequence]);
+        fs.renameSync(merged, outPath);
       }
     } else if (finalPdfSequence.length === 1) {
       // Only one component, just copy it to output
