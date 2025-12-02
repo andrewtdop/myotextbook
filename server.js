@@ -1216,7 +1216,6 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
         itemMd += `# ${it.title}\n\n`;
       }
       itemMd += `![${caption || it.title || "Image"}](${filename}){width=${widthPct}%}\n\n`;
-      if (caption) itemMd += `*${caption}*\n\n`;
       const imgMd = mdFile(workdir, `image-${it.id}.md`, itemMd);
       inputs.push(imgMd);
       
