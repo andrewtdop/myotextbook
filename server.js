@@ -1773,7 +1773,7 @@ app.post("/api/projects/:id/items", requireAuth, (req, res) => {
       initOptions.subtitle = "";
     }
     // source_url stays null
-  } else if (["url", "wikipedia"].includes(type)) {
+  } else if (["url", "wikipedia", "image"].includes(type)) {
     const rawUrl = req.body.url || null;
     source_url = rawUrl ? normalizeUrlMaybe(rawUrl.trim()) : null;
   }
