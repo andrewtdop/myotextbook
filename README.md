@@ -306,15 +306,11 @@ Key endpoints for integration:
 
 See source code for complete API documentation.
 
-## License
-
-[Add your license here]
-
 ## Support
 
 For issues, questions, or contributions:
-- GitHub Issues: [your-repo-url]/issues
-- Email: [your-support-email]
+- GitHub Issues: myotextbook/issues
+- Email: andrew@andrewvarsanyi.com
 
 ## Credits
 
