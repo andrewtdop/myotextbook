@@ -16,6 +16,12 @@ import { JSDOM } from "jsdom";
 import mime from "mime-types";
 import { Readability } from "@mozilla/readability";
 import session from "express-session";
+import FormData from "form-data";
+import Mailgun from "mailgun.js";
+import dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 // Use a browser-like User-Agent for external fetches to avoid 403 errors
 const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36";
@@ -98,6 +104,7 @@ CREATE TABLE IF NOT EXISTS items (
   source_url TEXT,
   local_path TEXT,
   options_json TEXT NOT NULL,
+  cached_content TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -111,6 +118,13 @@ UPDATE projects
 SET options_json='{}'
 WHERE options_json IS NULL OR TRIM(options_json) = '';
 `);
+
+// Add cached_content column if it doesn't exist (migration)
+const hasColumn = db.prepare(`PRAGMA table_info(items)`).all().some(col => col.name === 'cached_content');
+if (!hasColumn) {
+  console.log('Adding cached_content column to items table...');
+  db.exec(`ALTER TABLE items ADD COLUMN cached_content TEXT`);
+}
 
 // ---- NEW: users & versioning schema ----
 db.exec(`
@@ -145,6 +159,19 @@ CREATE TABLE IF NOT EXISTS comments (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users (username) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS access_requests (
+  id TEXT PRIMARY KEY,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  affiliation TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  reviewed_by TEXT,
+  reviewed_at TEXT
 );
 `);
 
@@ -188,8 +215,8 @@ const listProjects  = db.prepare(`SELECT id,name,options_json,created_at,updated
 const deleteProject = db.prepare(`DELETE FROM projects WHERE id=?`);
 
 const insertItem = db.prepare(`
-  INSERT INTO items (id,project_id,position,type,title,source_url,local_path,options_json,created_at,updated_at)
-  VALUES (@id,@project_id,@position,@type,@title,@source_url,@local_path,@options,@now,@now)
+  INSERT INTO items (id,project_id,position,type,title,source_url,local_path,options_json,cached_content,created_at,updated_at)
+  VALUES (@id,@project_id,@position,@type,@title,@source_url,@local_path,@options,@cached_content,@now,@now)
 `);
 const getItems            = db.prepare(`SELECT * FROM items WHERE project_id=? ORDER BY position ASC`);
 const getItemById         = db.prepare(`SELECT * FROM items WHERE id=? AND project_id=?`);
@@ -216,6 +243,57 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage });
+
+// ---- Mailgun configuration ----
+const MAILGUN_API_KEY = process.env.MAILGUN_API_KEY || '';
+const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || 'mg.myotext.org';
+const FROM_EMAIL = 'MYOText Admin <admin@mg.myotext.org>';
+const ADMIN_EMAIL = 'avarsanyi2@huskers.unl.edu';
+
+let mgClient = null;
+if (MAILGUN_API_KEY && MAILGUN_DOMAIN) {
+  const mailgun = new Mailgun(FormData);
+  mgClient = mailgun.client({
+    username: 'api',
+    key: MAILGUN_API_KEY
+  });
+}
+
+async function sendEmail({ to, subject, text, html }) {
+  if (!mgClient) {
+    console.warn('Mailgun not configured. Email would be sent to:', to);
+    console.log('Subject:', subject);
+    console.log('Text:', text);
+    return { success: false, error: 'Mailgun not configured' };
+  }
+  
+  try {
+    const messageData = {
+      from: FROM_EMAIL,
+      to: Array.isArray(to) ? to : [to],
+      subject: subject
+    };
+    
+    if (text) messageData.text = text;
+    if (html) messageData.html = html;
+    
+    const result = await mgClient.messages.create(MAILGUN_DOMAIN, messageData);
+    console.log('Email sent successfully:', result.id);
+    return { success: true, id: result.id };
+  } catch (err) {
+    console.error('Failed to send email:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+function generatePassword(length = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
 
 // ---- utils ----
 const nowISO = () => new Date().toISOString();
@@ -701,23 +779,63 @@ async function downloadToFile(url, destPath) {
 }
 
 async function fetchHtml(url) {
-  const res = await fetch(url, {
-    redirect: "follow",
-    headers: {
-      "User-Agent": USER_AGENT,
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Connection": "keep-alive",
-      "Referer": "https://www.google.com/",
-      "Upgrade-Insecure-Requests": "1"
+  // Try multiple User-Agents if first attempt fails
+  const userAgents = [
+    USER_AGENT, // Chrome on Mac
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", // Chrome on Windows
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", // Chrome on Linux
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" // Safari
+  ];
+  
+  let lastError = null;
+  
+  for (let i = 0; i < userAgents.length; i++) {
+    const ua = userAgents[i];
+    try {
+      const res = await fetch(url, {
+        redirect: "follow",
+        headers: {
+          "User-Agent": ua,
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Accept-Encoding": "gzip, deflate, br",
+          "DNT": "1",
+          "Connection": "keep-alive",
+          "Upgrade-Insecure-Requests": "1",
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "none",
+          "Cache-Control": "max-age=0"
+        }
+      });
+      
+      const html = await res.text();
+      
+      // Check if we got a Cloudflare challenge page
+      if (html.includes("Just a moment") || html.includes("cf-browser-verification") || html.includes("challenge-platform")) {
+        console.warn(`⚠ Cloudflare/bot protection detected on ${url} (attempt ${i+1}/${userAgents.length})`);
+        if (i < userAgents.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+          continue;
+        }
+        throw new Error(`Site requires browser verification (Cloudflare protection). Cannot fetch: ${url}`);
+      }
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      
+      return { html, headers: res.headers };
+    } catch (err) {
+      lastError = err;
+      if (i < userAgents.length - 1) {
+        console.warn(`⚠ Attempt ${i+1} failed: ${err.message}, trying different User-Agent...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Fetch failed ${res.status} ${res.statusText} for ${url}\n${txt.slice(0,512)}`);
   }
-  const html = await res.text();
-  return { html, headers: res.headers };
+  
+  throw new Error(`Fetch failed for ${url} after ${userAgents.length} attempts: ${lastError.message}`);
 }
 
 // Extract the main article content using Readability; fall back to cleaned <main/article/body>
@@ -725,18 +843,86 @@ function extractMainFromHtml(rawHtml, baseUrl = "") {
   const rough = rawHtml.replace(/<\/?(nav|aside|footer|header|iframe|noscript|template)[\s\S]*?>/gi, "");
   const dom = new JSDOM(rough, { url: baseUrl });
   const doc = dom.window.document;
+  
+  // Expanded junk selector list for better cleanup
   const junkSel = [
-    "[role='navigation']","[role='complementary']","[role='banner']",
-    ".sidebar",".side-bar",".widget",".ad",".ads",".advert",".share",".social",
-    ".menu",".nav",".breadcrumbs",".cookie",".gdpr",".newsletter",".subscribe",
-    ".pagination",".comments",".related",".recirc",".footer",".header",".hero"
+    "[role='navigation']","[role='complementary']","[role='banner']","[role='contentinfo']",
+    ".sidebar",".side-bar",".widget",".ad",".ads",".advert",".advertisement",
+    ".share",".social",".social-share",".share-buttons",
+    ".menu",".nav",".navigation",".breadcrumbs",".breadcrumb",
+    ".cookie",".gdpr",".newsletter",".subscribe",".subscription",
+    ".pagination",".comments",".comment",".related",".recirc",".recommendations",
+    ".footer",".header",".hero",".masthead",
+    ".promo",".sponsored",".outbrain",".taboola",
+    "script","style","link[rel='stylesheet']","meta"
   ].join(",");
   doc.querySelectorAll(junkSel).forEach(n => n.remove());
-  const reader = new Readability(doc);
+  
+  // Try Readability first (clone to preserve original doc)
+  const readerDoc = doc.cloneNode(true);
+  const reader = new Readability(readerDoc, {
+    charThreshold: 100, // Lower threshold to capture shorter articles
+    keepClasses: false
+  });
   const art = reader.parse();
-  if (art && art.content) return { html: art.content, title: art.title || "", byline: art.byline || "" };
-  const main = doc.querySelector("main, article") || doc.body;
-  return { html: main?.innerHTML || "", title: doc.title || "", byline: "" };
+  
+  if (art && art.content && art.content.trim().length > 100) {
+    console.log(`✓ Readability extracted ${art.content.length} chars from ${baseUrl}`);
+    return { html: art.content, title: art.title || "", byline: art.byline || "" };
+  }
+  
+  console.warn(`⚠ Readability failed for ${baseUrl}, trying fallbacks...`);
+  
+  // Fallback 1: Try common article selectors
+  const articleSelectors = [
+    "article",
+    "main article",
+    "[role='main']",
+    "main",
+    ".article-content",
+    ".post-content",
+    ".entry-content",
+    ".content-body",
+    ".article-body",
+    ".story-body",
+    "#article-body",
+    ".post-body"
+  ];
+  
+  for (const sel of articleSelectors) {
+    const elem = doc.querySelector(sel);
+    if (elem) {
+      // Remove nested junk
+      elem.querySelectorAll(junkSel).forEach(n => n.remove());
+      const html = elem.innerHTML.trim();
+      if (html.length > 100) {
+        console.log(`✓ Fallback selector '${sel}' extracted ${html.length} chars`);
+        return { html, title: doc.title || "", byline: "" };
+      }
+    }
+  }
+  
+  // Fallback 2: Get all paragraphs and filter by parent
+  const paragraphs = Array.from(doc.querySelectorAll("p"));
+  if (paragraphs.length > 2) {
+    const contentHtml = paragraphs
+      .filter(p => {
+        const text = p.textContent.trim();
+        return text.length > 50; // Only substantial paragraphs
+      })
+      .map(p => p.outerHTML)
+      .join("\n");
+    
+    if (contentHtml.length > 100) {
+      console.log(`✓ Paragraph extraction found ${contentHtml.length} chars`);
+      return { html: contentHtml, title: doc.title || "", byline: "" };
+    }
+  }
+  
+  // Last resort: body content
+  console.warn(`⚠ All extraction methods failed for ${baseUrl}, using body`);
+  const bodyHtml = doc.body?.innerHTML || "";
+  return { html: bodyHtml, title: doc.title || "", byline: "" };
 }
 
 // Static UI
@@ -861,11 +1047,49 @@ async function convertUrlToMdSmart(inputUrl, outPath, wikipediaAttributionCollec
     wikipediaAttributionCollector.push({ title: title.replace(/_/g, " "), url: finalUrl, revision: oldid || revision || null });
     return;
   }
+  
   const url = normalizeUrlMaybe(inputUrl);
-  const { html: raw } = await fetchHtml(url);
-  const { html: mainHtml, title } = extractMainFromHtml(raw, url);
-  const docHtml = `\n    <article>\n      ${title ? `<h1>${title}</h1>` : ""}\n      ${mainHtml}\n    </article>\n  `;
-  await convertHtmlToMd(docHtml, outPath, workdir);
+  console.log(`Fetching URL: ${url}`);
+  
+  try {
+    const { html: raw } = await fetchHtml(url);
+    console.log(`✓ Fetched ${raw.length} bytes from ${url}`);
+    
+    const { html: mainHtml, title } = extractMainFromHtml(raw, url);
+    console.log(`✓ Extracted content: ${mainHtml.length} bytes, title: "${title}"`);
+    
+    if (!mainHtml || mainHtml.trim().length < 50) {
+      console.warn(`⚠ Very little content extracted from ${url} (${mainHtml.length} bytes)`);
+    }
+    
+    const docHtml = `\n    <article>\n      ${title ? `<h1>${title}</h1>` : ""}\n      ${mainHtml}\n    </article>\n  `;
+    
+    await convertHtmlToMd(docHtml, outPath, workdir);
+    
+    // Verify markdown was created and has content
+    if (fs.existsSync(outPath)) {
+      const mdContent = fs.readFileSync(outPath, "utf8");
+      console.log(`✓ Generated markdown: ${mdContent.length} chars`);
+      if (mdContent.trim().length < 50) {
+        console.warn(`⚠ Warning: Very little markdown content generated (${mdContent.length} chars)`);
+      }
+    } else {
+      console.error(`✗ Markdown file was not created: ${outPath}`);
+    }
+  } catch (err) {
+    console.error(`✗ Failed to convert URL ${url}:`, err.message);
+    
+    // For bot-protected sites, create a marker file so we can detect and skip it
+    if (err.message.includes("browser verification") || err.message.includes("Cloudflare")) {
+      console.log(`Creating marker for bot-protected site: ${url}`);
+      const markerMd = `Bot protection detected: This website uses bot protection (Cloudflare) and cannot be automatically fetched.`;
+      fs.writeFileSync(outPath, markerMd, "utf8");
+      console.log(`✓ Created marker for skipping during export`);
+      return; // Don't throw error, just use marker
+    }
+    
+    throw err;
+  }
 }
 
 function ensureCss(workdir) {
@@ -1155,8 +1379,29 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     if (it.type === "url" || it.type === "wikipedia") {
       const out = path.join(workdir, `url-${it.id}.md`);
       try {
-        await convertUrlToMdSmart(it.source_url, out, wikipediaAttribution, workdir);
-        itemMd += `# ${it.title}\n\n` + fs.readFileSync(out, "utf8");
+        // Use cached content if available, otherwise fetch fresh
+        if (it.type === "url" && it.cached_content) {
+          fs.writeFileSync(out, it.cached_content, "utf8");
+          report(`Using cached content: ${it.title}`);
+        } else {
+          await convertUrlToMdSmart(it.source_url, out, wikipediaAttribution, workdir);
+        }
+        
+        // Check if content is a bot-protection placeholder
+        const content = fs.readFileSync(out, "utf8");
+        if (content.includes("This website uses bot protection") || content.includes("cannot be automatically fetched")) {
+          console.warn(`⚠ Skipping bot-protected page: ${it.title}`);
+          failedPages.push({ 
+            title: it.title, 
+            url: it.source_url, 
+            error: "Site uses bot protection (Cloudflare). Cannot be automatically fetched." 
+          });
+          report(`Skipped (bot protection): ${it.title}`);
+          isFirstItem = false;
+          continue; // Skip this item entirely
+        }
+        
+        itemMd += `# ${it.title}\n\n` + content;
         const titled = mdFile(workdir, `url-${it.id}-titled.md`, itemMd);
         const res = await scrubMarkdownForPdf(titled, workdir);
         if (res.hadSvg) sawAnySvg = true;
@@ -1228,44 +1473,38 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
     }
   }
   
-  // Attribution and Sources
+  // Attribution and Sources - will be added at the end after all content
+  let attributionContent = [];
   let creditsText = authorBanner("", project);
-  let creditsAdded = false;
   
-  if (wikipediaAttribution.length) {
-    const a = [
-      creditsText,
-      "Attributions:",
-      "",
-      "This document includes content from Wikipedia, available under the Creative Commons Attribution-ShareAlike License (CC BY-SA).",
-      "",
-      ...wikipediaAttribution.map(e => `• ${e.title} — ${e.url}${e.revision ? ` (rev ${e.revision})` : ""} (accessed ${new Date().toISOString().split("T")[0]})`),
-      ""
-    ].join("\n");
-    const attr = mdFile(workdir, "attribution.md", a);
-    const res = await scrubMarkdownForPdf(attr, workdir);
-    if (res.hadSvg) sawAnySvg = true;
-    inputs.push(attr);
-    report("Added attribution");
-    creditsAdded = true;
-  }
-  if (nonWikiAttribution.length) {
-    const s = [
-      creditsAdded ? "" : creditsText,
-      "Sources:",
-      "",
-      ...nonWikiAttribution.map(e => {
+  if (wikipediaAttribution.length || nonWikiAttribution.length) {
+    // Add page break before attributions
+    attributionContent.push("\\clearpage\n\n<div class=\"pagebreak\"></div>\n\n");
+    attributionContent.push(creditsText + "\n\n");
+    
+    if (wikipediaAttribution.length) {
+      attributionContent.push("## Attributions\n\n");
+      attributionContent.push("This document includes content from Wikipedia, available under the Creative Commons Attribution-ShareAlike License (CC BY-SA).\n\n");
+      wikipediaAttribution.forEach(e => {
+        attributionContent.push(`• ${e.title} — ${e.url}${e.revision ? ` (rev ${e.revision})` : ""} (accessed ${new Date().toISOString().split("T")[0]})\n\n`);
+      });
+    }
+    
+    if (nonWikiAttribution.length) {
+      attributionContent.push("## Sources\n\n");
+      nonWikiAttribution.forEach(e => {
         const label = e.kind === "image" ? "(image)" : "(web)";
         const title = (e.title || "").trim() || "(Untitled)";
-        return `• ${title} — ${e.url} ${label} (accessed ${e.accessed})`;
-      }),
-      ""
-    ].join("\n");
-    const src = mdFile(workdir, "sources.md", s);
-    const res = await scrubMarkdownForPdf(src, workdir);
+        attributionContent.push(`• ${title} — ${e.url} ${label} (accessed ${e.accessed})\n\n`);
+      });
+    }
+    
+    // Add attribution as the last item
+    const attrFile = mdFile(workdir, "zzz-attribution.md", attributionContent.join(""));
+    const res = await scrubMarkdownForPdf(attrFile, workdir);
     if (res.hadSvg) sawAnySvg = true;
-    inputs.push(src);
-    report("Added sources");
+    inputs.push(attrFile);
+    report("Added attribution page");
   }
 
   function fixAbsoluteImagePaths(workdir) {
@@ -1399,7 +1638,12 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
   }
 
   report("Done");
-  return outPath;
+  
+  // Return export info including any failed pages
+  return { 
+    path: outPath, 
+    failedPages: failedPages.length > 0 ? failedPages : null 
+  };
 }
 
 // ---- routes ----
@@ -1707,6 +1951,151 @@ app.post("/api/auth/login", express.json(), (req, res) => {
 
 app.post("/api/auth/logout", (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 
+// Submit access request (no auth required)
+app.post("/api/access-request", express.json(), async (req, res) => {
+  const { first_name, last_name, email, affiliation } = req.body || {};
+  
+  if (!first_name || !last_name || !email) {
+    return res.status(400).json({ error: "First name, last name, and email are required" });
+  }
+  
+  // Check if there's already a pending request for this email
+  const existing = db.prepare(`SELECT * FROM access_requests WHERE email=? AND status='pending'`).get(email);
+  if (existing) {
+    return res.status(400).json({ error: "You already have a pending access request" });
+  }
+  
+  // Check if user already exists - if so, send them their credentials
+  const existingUser = db.prepare(`SELECT * FROM users WHERE username=?`).get(email);
+  if (existingUser) {
+    // Send existing credentials to user
+    await sendEmail({
+      to: email,
+      subject: 'MYOText Account Information',
+      text: `Hello ${existingUser.first_name || first_name},\n\nYou requested access to MYOText, but you already have an account!\n\nHere are your existing credentials:\n\nUsername: ${existingUser.username}\nPassword: ${existingUser.password}\n\nYou can log in at any time with these credentials.\n\nBest regards,\nMYOText Team`,
+      html: `<h2>Account Information</h2>\n<p>Hello ${existingUser.first_name || first_name},</p>\n<p>You requested access to MYOText, but you already have an account!</p>\n<p>Here are your existing credentials:</p>\n<p><strong>Username:</strong> ${existingUser.username}<br>\n<strong>Password:</strong> ${existingUser.password}</p>\n<p>You can log in at any time with these credentials.</p>\n<p>Best regards,<br>MYOText Team</p>`
+    });
+    
+    return res.json({ 
+      success: true, 
+      message: "Account already exists. Your credentials have been sent to your email." 
+    });
+  }
+  
+  const id = nanoid(10);
+  const now = nowISO();
+  
+  db.prepare(`
+    INSERT INTO access_requests (id, first_name, last_name, email, affiliation, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+  `).run(id, first_name, last_name, email, affiliation || '', now, now);
+  
+  // Send email notification to admin
+  await sendEmail({
+    to: ADMIN_EMAIL,
+    subject: 'New MYOText Access Request',
+    text: `New access request received:\n\nName: ${first_name} ${last_name}\nEmail: ${email}\nAffiliation: ${affiliation || 'Not provided'}\n\nPlease log in to the system to approve or decline this request.`,
+    html: `<h2>New Access Request</h2>\n<p><strong>Name:</strong> ${first_name} ${last_name}</p>\n<p><strong>Email:</strong> ${email}</p>\n<p><strong>Affiliation:</strong> ${affiliation || 'Not provided'}</p>\n<p>Please log in to the system to approve or decline this request.</p>`
+  });
+  
+  res.json({ success: true, id });
+});
+
+// Get pending access requests (admin only)
+app.get("/api/access-requests", requireAuth, (req, res) => {
+  if (!req.session.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  
+  const requests = db.prepare(`
+    SELECT id, first_name, last_name, email, affiliation, status, created_at
+    FROM access_requests
+    WHERE status='pending'
+    ORDER BY created_at DESC
+  `).all();
+  res.json(requests);
+});
+
+// Approve access request (admin only)
+app.post("/api/access-requests/:id/approve", requireAuth, express.json(), async (req, res) => {
+  if (!req.session.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  
+  const request = db.prepare(`SELECT * FROM access_requests WHERE id=?`).get(req.params.id);
+  if (!request) return res.status(404).json({ error: "Request not found" });
+  
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: "Request already processed" });
+  }
+  
+  // Generate password
+  const password = generatePassword();
+  const username = request.email;
+  const now = nowISO();
+  
+  // Create user account
+  try {
+    db.prepare(`
+      INSERT INTO users (username, password, first_name, last_name, affiliation, email, is_admin, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(username, password, request.first_name, request.last_name, request.affiliation, request.email, now, now);
+    
+    // Update request status
+    db.prepare(`
+      UPDATE access_requests
+      SET status='approved', reviewed_by=?, reviewed_at=?, updated_at=?
+      WHERE id=?
+    `).run(req.session.user.username, now, now, request.id);
+    
+    // Send approval email with credentials
+    await sendEmail({
+      to: request.email,
+      subject: 'MYOText Access Approved',
+      text: `Hello ${request.first_name},\n\nYour access request to MYOText has been approved!\n\nYou can now log in with the following credentials:\n\nUsername: ${username}\nPassword: ${password}\n\nPlease change your password after your first login.\n\nBest regards,\nMYOText Team`,
+      html: `<h2>Access Approved!</h2>\n<p>Hello ${request.first_name},</p>\n<p>Your access request to MYOText has been approved!</p>\n<p>You can now log in with the following credentials:</p>\n<p><strong>Username:</strong> ${username}<br>\n<strong>Password:</strong> ${password}</p>\n<p>Please change your password after your first login.</p>\n<p>Best regards,<br>MYOText Team</p>`
+    });
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to approve request:', err);
+    res.status(500).json({ error: 'Failed to create user account' });
+  }
+});
+
+// Decline access request (admin only)
+app.post("/api/access-requests/:id/decline", requireAuth, express.json(), async (req, res) => {
+  if (!req.session.user.is_admin) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  
+  const request = db.prepare(`SELECT * FROM access_requests WHERE id=?`).get(req.params.id);
+  if (!request) return res.status(404).json({ error: "Request not found" });
+  
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: "Request already processed" });
+  }
+  
+  const now = nowISO();
+  
+  // Update request status
+  db.prepare(`
+    UPDATE access_requests
+    SET status='declined', reviewed_by=?, reviewed_at=?, updated_at=?
+    WHERE id=?
+  `).run(req.session.user.username, now, now, request.id);
+  
+  // Send decline email
+  await sendEmail({
+    to: request.email,
+    subject: 'MYOText Access Request Update',
+    text: `Hello ${request.first_name},\n\nThank you for your interest in MYOText.\n\nWe are unable to approve your access request at this time. If you would like to provide additional information about your planned usage of the tool, please reply to this email.\n\nBest regards,\nMYOText Team`,
+    html: `<h2>Access Request Update</h2>\n<p>Hello ${request.first_name},</p>\n<p>Thank you for your interest in MYOText.</p>\n<p>We are unable to approve your access request at this time. If you would like to provide additional information about your planned usage of the tool, please reply to this email.</p>\n<p>Best regards,<br>MYOText Team</p>`
+  });
+  
+  res.json({ success: true });
+});
+
 // Create user endpoint (admin only)
 app.post("/api/admin/users", requireAuth, express.json(), (req, res) => {
   // Check if current user is admin
@@ -1850,7 +2239,7 @@ app.put("/api/profile", requireAuth, (req, res) => {
 });
 
 // Create item (url, wikipedia, heading, image)
-app.post("/api/projects/:id/items", requireAuth, (req, res) => {
+app.post("/api/projects/:id/items", requireAuth, async (req, res) => {
   const p = getProject.get(req.params.id);
   if (!p) return res.status(404).json({ error: "Project not found" });
   const items = getItems.all(p.id);
@@ -1859,7 +2248,9 @@ app.post("/api/projects/:id/items", requireAuth, (req, res) => {
   const type = (req.body.type || "").toLowerCase();
   let title = (req.body.title || "").trim() || (type === "heading" ? "Chapter" : "Untitled");
   let source_url = null;
+  let cached_content = null;
   let initOptions = (req.body.options && typeof req.body.options === "object") ? req.body.options : {};
+  
   if (type === "titlepage") {
     title = req.body.title?.trim() || "";
     // Subtitle is already in initOptions from req.body.options
@@ -1870,10 +2261,26 @@ app.post("/api/projects/:id/items", requireAuth, (req, res) => {
   } else if (["url", "wikipedia", "image"].includes(type)) {
     const rawUrl = req.body.url || null;
     source_url = rawUrl ? normalizeUrlMaybe(rawUrl.trim()) : null;
+    
+    // Cache website content if requested (but not for Wikipedia)
+    if (type === "url" && req.body.cacheContent && source_url) {
+      try {
+        const tempDir = fs.mkdtempSync(path.join(TMP_DIR, `cache-${id}-`));
+        const tempMd = path.join(tempDir, "content.md");
+        await convertUrlToMdSmart(source_url, tempMd, [], tempDir);
+        cached_content = fs.readFileSync(tempMd, "utf8");
+        // Clean up temp directory
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`Failed to cache content for ${source_url}:`, err.message);
+        // Continue without cached content
+      }
+    }
   }
+  
   if (!["url","wikipedia","heading","image","titlepage"].includes(type)) return res.status(400).json({ error: "Invalid type" });
-  insertItem.run({ id, project_id: p.id, position, type, title, source_url, local_path: null, options: JSON.stringify(initOptions), now: nowISO() });
-  res.json({ id, type, title, source_url, position });
+  insertItem.run({ id, project_id: p.id, position, type, title, source_url, local_path: null, options: JSON.stringify(initOptions), cached_content, now: nowISO() });
+  res.json({ id, type, title, source_url, position, cached_content: cached_content ? true : false });
 });
 
 // Upload item (docx, pdf, image) — store only filename in DB
@@ -1963,6 +2370,41 @@ app.delete("/api/projects/:id/items/:itemId", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Toggle caching for a URL item
+app.post("/api/projects/:id/items/:itemId/cache", requireAuth, async (req, res) => {
+  const p = getProject.get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  const item = getItemById.get(req.params.itemId, p.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (item.type !== "url") return res.status(400).json({ error: "Only URL items can be cached" });
+  
+  const { cache } = req.body;
+  let cached_content = item.cached_content;
+  
+  if (cache && !cached_content && item.source_url) {
+    // Cache the content
+    try {
+      const tempDir = fs.mkdtempSync(path.join(TMP_DIR, `cache-${item.id}-`));
+      const tempMd = path.join(tempDir, "content.md");
+      await convertUrlToMdSmart(item.source_url, tempMd, [], tempDir);
+      cached_content = fs.readFileSync(tempMd, "utf8");
+      // Clean up temp directory
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (err) {
+      console.error(`Failed to cache content for ${item.source_url}:`, err.message);
+      return res.status(500).json({ error: "Failed to cache content" });
+    }
+  } else if (!cache) {
+    // Remove cache
+    cached_content = null;
+  }
+  
+  db.prepare(`UPDATE items SET cached_content = ?, updated_at = ? WHERE id = ?`)
+    .run(cached_content, nowISO(), item.id);
+  
+  res.json({ ok: true, cached: cached_content ? true : false });
+});
+
 // SSE stream of progress
 app.get("/api/progress/:id", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
@@ -2001,10 +2443,22 @@ app.post("/api/projects/:id/export", async (req, res) => {
   // Run export in background
   (async () => {
     try {
-      const outPath = await exportProjectTo(format, p, items, options, (progress) => {
+      const result = await exportProjectTo(format, p, items, options, (progress) => {
         setProgress(jobId, { ...progress, done: false });
       });
-      setProgress(jobId, { step: 1, total: 1, message: "Done", done: true, output: outPath });
+      
+      // Handle both old string format and new object format
+      const outPath = typeof result === 'string' ? result : result.path;
+      const failedPages = typeof result === 'object' ? result.failedPages : null;
+      
+      setProgress(jobId, { 
+        step: 1, 
+        total: 1, 
+        message: "Done", 
+        done: true, 
+        output: outPath,
+        failedPages: failedPages 
+      });
     } catch (err) {
       setProgress(jobId, { step: 1, total: 1, message: "Error", done: true, error: err.message });
     }

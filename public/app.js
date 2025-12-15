@@ -174,6 +174,85 @@ function parseKeywordsCSV(csv) {
     .filter(Boolean);
 }
 
+// ===================== access requests (admin) =====================
+async function loadAccessRequests() {
+  try {
+    const requests = await fetchJSON("/api/access-requests");
+    const section = $("#accessRequestsSection");
+    const list = $("#accessRequestsList");
+    const noRequests = $("#noAccessRequests");
+    
+    if (!section || !list) return;
+    
+    // Show section for admins
+    section.classList.remove("hidden");
+    
+    if (!requests || requests.length === 0) {
+      list.innerHTML = "";
+      noRequests?.classList.remove("hidden");
+      return;
+    }
+    
+    noRequests?.classList.add("hidden");
+    
+    list.innerHTML = requests.map(req => `
+      <div class="border rounded p-3 bg-gray-50" data-request-id="${req.id}">
+        <div class="flex items-start justify-between mb-2">
+          <div>
+            <div class="font-semibold">${req.first_name} ${req.last_name}</div>
+            <div class="text-sm text-gray-600">${req.email}</div>
+            ${req.affiliation ? `<div class="text-sm text-gray-600">${req.affiliation}</div>` : ''}
+          </div>
+          <div class="text-xs text-gray-500">
+            ${new Date(req.created_at).toLocaleDateString()}
+          </div>
+        </div>
+        <div class="flex gap-2 justify-end">
+          <button class="decline-request px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-100 text-sm" data-id="${req.id}">
+            Decline
+          </button>
+          <button class="approve-request px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-sm" data-id="${req.id}">
+            Approve
+          </button>
+        </div>
+      </div>
+    `).join('');
+    
+    // Add event listeners
+    list.querySelectorAll('.approve-request').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.target.dataset.id;
+        if (confirm('Approve this access request? The user will receive an email with login credentials.')) {
+          try {
+            await fetchJSON(`/api/access-requests/${id}/approve`, { method: 'POST' });
+            alert('Request approved! User will receive an email with credentials.');
+            await loadAccessRequests();
+          } catch (err) {
+            alert('Error: ' + err.message);
+          }
+        }
+      });
+    });
+    
+    list.querySelectorAll('.decline-request').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.target.dataset.id;
+        if (confirm('Decline this access request? The user will be notified via email.')) {
+          try {
+            await fetchJSON(`/api/access-requests/${id}/decline`, { method: 'POST' });
+            alert('Request declined. User has been notified.');
+            await loadAccessRequests();
+          } catch (err) {
+            alert('Error: ' + err.message);
+          }
+        }
+      });
+    });
+  } catch (err) {
+    console.error('Failed to load access requests:', err);
+  }
+}
+
 // ===================== dashboard =====================
 async function refreshProjectList() {
   await refreshMe();
@@ -380,6 +459,12 @@ function bindGlobalUI(){
       f.email.value      = prof.email||"";
       f.password.value   = "";
     }
+    
+    // If admin, load pending access requests
+    if (currentUser.is_admin) {
+      await loadAccessRequests();
+    }
+    
     $("#profileModal")?.classList.remove("hidden");
     $("#profileModal")?.classList.add("flex");
   });
@@ -417,6 +502,38 @@ function bindGlobalUI(){
       await refreshMe();
       alert("Profile saved.");
     } catch (err) { alert(err.message); }
+  });
+
+  // Request Access modal handlers
+  $("#requestAccessBtn")?.addEventListener("click", ()=>{
+    $("#loginModal")?.classList.add("hidden");
+    $("#loginModal")?.classList.remove("flex");
+    $("#requestAccessModal")?.classList.remove("hidden");
+    $("#requestAccessModal")?.classList.add("flex");
+  });
+
+  $("#requestAccessClose")?.addEventListener("click", ()=>{
+    $("#requestAccessModal")?.classList.add("hidden");
+    $("#requestAccessModal")?.classList.remove("flex");
+  });
+
+  $("#requestAccessForm")?.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = Object.fromEntries(fd.entries());
+    try {
+      await fetchJSON("/api/access-request", { 
+        method:"POST", 
+        headers:{ "Content-Type":"application/json" }, 
+        body: JSON.stringify(body) 
+      });
+      $("#requestAccessModal")?.classList.add("hidden");
+      $("#requestAccessModal")?.classList.remove("flex");
+      $("#requestAccessForm").reset();
+      alert("Access request submitted! You'll receive an email if your request is approved.");
+    } catch (err) { 
+      alert("Error: " + err.message); 
+    }
   });
 
   // Admin: Add User
@@ -648,13 +765,15 @@ function bindGlobalUI(){
       } else {
         // url / wikipedia
         if (!url) return alert("Please provide a URL.");
+        const cacheContent = kind === "url" && document.getElementById("cacheContentCheckbox")?.checked;
         await fetchJSON(`/api/projects/${currentProject.id}/items`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             type: (kind === "wikipedia" ? "wikipedia" : "url"),
             title,
-            url
+            url,
+            cacheContent
           })
         });
       }
@@ -695,6 +814,7 @@ function bindKindUI() {
   if (!kindSelect) return;
   const subtitleRow = $("#subtitleRow");
   const fileRow = $("#fileRow");
+  const cacheRow = $("#cacheRow");
   const apply = () => {
     const k = (kindSelect.value || "url").toLowerCase();
     // Hide URL row for: file, heading, titlepage
@@ -703,6 +823,8 @@ function bindKindUI() {
     if (fileRow) fileRow.classList.toggle("hidden", k === "heading" || k === "titlepage");
     // Show subtitle only for titlepage
     if (subtitleRow) subtitleRow.classList.toggle("hidden", k !== "titlepage");
+    // Show cache checkbox only for URL type (not Wikipedia)
+    if (cacheRow) cacheRow.classList.toggle("hidden", k !== "url");
     // Update URL placeholder
     if (urlInput) {
       urlInput.placeholder = (k === "image") ? "Image URL (https://...)" : "URL (https://...)";
@@ -782,7 +904,7 @@ async function renderItems(){
   itemsTbody.innerHTML = "";
   const items = currentProject?.items || [];
   if(!items.length){
-    itemsTbody.append(el("tr",{}, el("td",{colSpan:5,className:"p-3 text-gray-500"},"No items yet.")));
+    itemsTbody.append(el("tr",{}, el("td",{colSpan:6,className:"p-3 text-gray-500"},"No items yet.")));
     return;
   }
 
@@ -852,6 +974,39 @@ async function renderItems(){
       refTd.append(capLbl,capEdit,widthWrap);
     }
     tr.appendChild(refTd);
+
+    // cached column (only for URL type)
+    const cachedTd = document.createElement("td");
+    cachedTd.className = "p-2 align-top text-center";
+    if (it.type === "url") {
+      const checkbox = el("input", {
+        type: "checkbox",
+        className: "accent-red-600 cursor-pointer",
+        checked: it.cached_content ? true : false,
+        title: it.cached_content ? "Using cached content" : "Fetch fresh content on export"
+      });
+      checkbox.addEventListener("change", async () => {
+        try {
+          const result = await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}/cache`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cache: checkbox.checked })
+          });
+          // Update the item in currentProject
+          it.cached_content = result.cached ? "cached" : null;
+          checkbox.title = result.cached ? "Using cached content" : "Fetch fresh content on export";
+        } catch (err) {
+          console.error("Failed to toggle cache:", err);
+          // Revert checkbox state
+          checkbox.checked = !checkbox.checked;
+          alert("Failed to toggle cache: " + err.message);
+        }
+      });
+      cachedTd.append(checkbox);
+    } else {
+      cachedTd.append(el("span", { className: "text-gray-400" }, "—"));
+    }
+    tr.appendChild(cachedTd);
 
     // delete
     const delTd = document.createElement("td");

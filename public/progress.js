@@ -84,6 +84,12 @@
           $dl.href = href;
           $dl.download = output.split('/').pop() || 'export';
           $actions.classList.remove('hidden');
+          
+          // Check for failed pages and show notification
+          if (data.failedPages && data.failedPages.length > 0) {
+            const pageList = data.failedPages.map(p => `• ${p.title || 'Untitled'}: ${p.error}`).join('\n');
+            alert(`Export completed, but ${data.failedPages.length} page(s) could not be included:\n\n${pageList}\n\nThese pages were skipped due to bot protection or fetch errors.`);
+          }
 
           // Auto-download after a short tick (optional; comment out if you prefer manual)
           setTimeout(() => {
