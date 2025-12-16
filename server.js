@@ -36,6 +36,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// Trust proxy - required for nginx/Cloudflare SSL
+app.set('trust proxy', 1);
+
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -45,7 +49,10 @@ app.use(session({
   secret: process.env.SESSION_SECRET || "dev-secret-change-me",
   resave: false,
   saveUninitialized: false,
-  cookie: { sameSite: "lax" }
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: "lax" 
+  }
 }));
 
 function requireAuth(req, res, next) {
