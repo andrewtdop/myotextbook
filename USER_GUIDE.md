@@ -25,8 +25,11 @@ A comprehensive guide to creating custom textbooks with MYOTextbook.
 
 1. Navigate to your MYOTextbook instance (e.g., `http://localhost:8080`)
 2. Click the **Profile** button in the top-right corner
-3. Enter your username and password
-4. Click **Login**
+
+<img width="2072" height="818" alt="CleanShot 2025-12-15 at 16 59 01@2x" src="https://github.com/user-attachments/assets/49522173-9ccc-4587-9710-2f46e6280b67" />
+
+4. Enter your username and password
+5. Click **Login**
 
 ### Requesting Access (New Users)
 
@@ -60,6 +63,8 @@ After logging in, you'll see the **Projects Dashboard** with:
 ## Creating Your First Project
 
 ### Step 1: Create a New Project
+
+<img width="3422" height="1466" alt="CleanShot 2025-12-15 at 16 59 34@2x" src="https://github.com/user-attachments/assets/24979195-147f-4cc3-abb5-93a06c7bcc80" />
 
 1. Click the **"New Project"** button in the top-right corner
 2. The editor view opens with an empty project
@@ -102,7 +107,7 @@ Creates a formatted title page for your textbook.
 - Title: `Introduction to American History`
 - Subtitle: `From Colonial Times to Modern Era`
 
-[Screenshot placeholder: Title page form]
+<img width="2012" height="906" alt="CleanShot 2025-12-15 at 17 00 17@2x" src="https://github.com/user-attachments/assets/9d180571-3fa4-49bb-9f62-866d4248ca0f" />
 
 ---
 
@@ -120,7 +125,7 @@ Creates section breaks and chapter headings in your textbook.
 
 **Best practice:** Use headings to organize content into logical sections (chapters, units, topics).
 
-[Screenshot placeholder: Heading in items list]
+<img width="1970" height="1574" alt="CleanShot 2025-12-15 at 17 00 54@2x" src="https://github.com/user-attachments/assets/ae1929cd-bcbd-4c3e-bf7a-a91139972586" />
 
 ---
 
@@ -146,7 +151,7 @@ Extracts and includes content from any website.
 - You'll see a notification listing failed pages
 - Consider using a different source or manually saving the content
 
-[Screenshot placeholder: URL form with cache option]
+<img width="1940" height="654" alt="CleanShot 2025-12-15 at 17 01 42@2x" src="https://github.com/user-attachments/assets/b8b87f59-10dc-4463-a92c-6fa75beab836" />
 
 ---
 
@@ -167,7 +172,7 @@ Automatically fetches and formats Wikipedia articles.
 
 **Note:** The system automatically extracts the article content and formats it properly, removing navigation elements and sidebars.
 
-[Screenshot placeholder: Wikipedia article in textbook]
+<img width="1802" height="1520" alt="CleanShot 2025-12-15 at 17 03 07@2x" src="https://github.com/user-attachments/assets/077db296-90e9-47c1-a532-0b6e88799f3b" />
 
 ---
 
@@ -188,7 +193,7 @@ Includes images in your textbook with captions.
 **Example:**
 - Caption: `Figure 1.2: The signing of the Declaration of Independence, John Trumbull (1819)`
 
-[Screenshot placeholder: Image with caption in textbook]
+<img width="2008" height="1888" alt="CleanShot 2025-12-15 at 17 03 47@2x" src="https://github.com/user-attachments/assets/2a1be662-c164-4732-afe3-f75f836c8e0f" />
 
 ---
 
@@ -212,7 +217,7 @@ Converts and includes PDF or Word documents.
 - Title: `Lecture Notes: The Civil Rights Movement`
 - File: `civil_rights_lecture.pdf`
 
-[Screenshot placeholder: File upload interface]
+<img width="1950" height="592" alt="CleanShot 2025-12-15 at 17 04 14@2x" src="https://github.com/user-attachments/assets/bcbc516e-5406-4d09-8f5e-7e6ffc4876e9" />
 
 ---
 
@@ -236,7 +241,7 @@ Website caching allows you to preserve the current state of web content.
 
 **Cache indicator:** Cached items show a checkmark in the "Cached" column of the items table.
 
-[Screenshot placeholder: Items table with cached column]
+<img width="2004" height="1604" alt="CleanShot 2025-12-15 at 17 04 36@2x" src="https://github.com/user-attachments/assets/19a8b05e-1afb-4c2b-909f-aef662b7bc89" />
 
 ---
 
@@ -258,7 +263,7 @@ Content appears in your textbook in the order shown in the items table.
 - Group related content together
 - Place attribution information at the end
 
-[Screenshot placeholder: Drag and drop reordering]
+![CleanShot 2025-12-15 at 17 05 45](https://github.com/user-attachments/assets/16840629-441d-452b-8e81-a2acf981f026)
 
 ---
 
@@ -277,7 +282,7 @@ Content appears in your textbook in the order shown in the items table.
 
 **Warning:** Deletions cannot be undone! Consider creating a copy of your project before making major changes.
 
-[Screenshot placeholder: Editing an item]
+<img width="2000" height="404" alt="CleanShot 2025-12-15 at 17 06 21@2x" src="https://github.com/user-attachments/assets/f840ac06-dd4a-49ae-b688-25d972c6cf0f" />
 
 ---
 
@@ -299,8 +304,6 @@ Keywords help you organize and search for projects.
 **Searching by keywords:**
 - On the Projects Dashboard, type keywords in the search bar
 - Projects matching your keywords will be filtered automatically
-
-[Screenshot placeholder: Keywords field and search]
 
 ---
 
@@ -335,12 +338,6 @@ The Options panel (below the Add Content section) controls export settings.
 - Based on your headings and content items
 - Includes page numbers in PDF format
 
-**To save options:**
-- Options are saved automatically as you change them
-- No need to click a save button
-
-[Screenshot placeholder: Options panel]
-
 ---
 
 ## Exporting Your Textbook
@@ -364,7 +361,7 @@ Best for: Printing, sharing as a document, preserving exact layout
 - Preserved images and formatting
 - Attribution page at the end
 
-[Screenshot placeholder: Export panel with PDF button]
+<img width="2008" height="1924" alt="CleanShot 2025-12-15 at 17 07 09@2x" src="https://github.com/user-attachments/assets/856f5f1e-a6f8-4e7c-9233-8fa6b9fd8c1a" />
 
 ---
 
@@ -384,8 +381,6 @@ Best for: E-readers, tablets, responsive reading on different devices
 - Compatible with most e-readers (Kindle, Kobo, Apple Books)
 - Embedded images
 
-[Screenshot placeholder: EPUB being read on different devices]
-
 ---
 
 ### Export Progress
@@ -402,7 +397,7 @@ During export, you'll see a progress modal showing:
 - The export continues without the failed pages
 - Review the list and consider alternative sources
 
-[Screenshot placeholder: Export progress modal]
+<img width="1300" height="478" alt="CleanShot 2025-12-15 at 17 07 47@2x" src="https://github.com/user-attachments/assets/05ac0738-b24a-4861-bc4d-f5fc7aa06f9b" />
 
 ---
 
@@ -436,8 +431,6 @@ MYOTextbook includes basic version control to track changes and create copies.
 - Preserving a snapshot before extensive edits
 - Creating derivative works from a base template
 
-[Screenshot placeholder: Copy button in projects table]
-
 ---
 
 ### Version Logs
@@ -453,7 +446,7 @@ The system automatically tracks version changes.
 - Version information appears in the project metadata
 - Shows current version and original author
 
-[Screenshot placeholder: Version metadata]
+<img width="1950" height="1454" alt="CleanShot 2025-12-15 at 17 08 17@2x" src="https://github.com/user-attachments/assets/442c5bfb-5b32-4c34-8978-2bee0570cb75" />
 
 ---
 
@@ -498,7 +491,7 @@ Access your profile by clicking the **Profile** button (when logged in).
 2. Click **Save**
 3. Changes take effect immediately
 
-[Screenshot placeholder: Profile form]
+<img width="1410" height="684" alt="CleanShot 2025-12-15 at 17 08 43@2x" src="https://github.com/user-attachments/assets/fa7a0758-e361-4f52-a74a-52c0f061b170" />
 
 ---
 
@@ -530,7 +523,7 @@ Users with admin privileges see additional features.
 4. Click **Upload**
 5. Review the success message
 
-[Screenshot placeholder: Add user modal with tabs]
+<img width="900" height="132" alt="CleanShot 2025-12-15 at 17 09 32@2x" src="https://github.com/user-attachments/assets/8c254ec3-a3ec-4fed-a5cb-83a984a2a94e" />
 
 ---
 
@@ -559,8 +552,6 @@ When users request access, admins see pending requests in their Profile page.
 1. Click the **"Decline"** button
 2. Confirm the action
 3. User receives a polite email explaining they can provide more information
-
-[Screenshot placeholder: Access requests in profile modal]
 
 ---
 
