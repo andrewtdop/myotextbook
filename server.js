@@ -1864,6 +1864,7 @@ app.post("/api/projects/:id/copy", requireAuth, (req, res) => {
         source_url: item.source_url,
         local_path: item.local_path,
         options: item.options_json,
+        cached_content: item.cached_content,
         now
       });
     }
@@ -2309,7 +2310,7 @@ app.post("/api/projects/:id/items/upload", requireAuth, upload.single("file"), (
   let initOptions = {};
   if (typeof req.body.options === "string") initOptions = safeParseJSON(req.body.options, {});
   else if (req.body.options && typeof req.body.options === "object") initOptions = req.body.options;
-  insertItem.run({ id, project_id: p.id, position, type, title, source_url: null, local_path: file.filename, options: JSON.stringify(initOptions), now: nowISO() });
+  insertItem.run({ id, project_id: p.id, position, type, title, source_url: null, local_path: file.filename, options: JSON.stringify(initOptions), cached_content: null, now: nowISO() });
   res.json({ id, type, title, position, filename: file.filename });
 });
 
@@ -2470,6 +2471,19 @@ app.post("/api/projects/:id/export", async (req, res) => {
       setProgress(jobId, { step: 1, total: 1, message: "Error", done: true, error: err.message });
     }
   })();
+});
+
+// ---- error handler (keep API responses JSON) ----
+// If a route throws and doesn't catch, Express defaults to an HTML error page.
+// The client expects JSON/text, so normalize errors for /api/*.
+app.use((err, req, res, _next) => {
+  console.error("Unhandled route error:", err);
+  const wantsJson = req.path?.startsWith("/api/") || req.headers.accept?.includes("application/json");
+  if (wantsJson) {
+    const status = (typeof err?.status === "number" && err.status >= 400 && err.status < 600) ? err.status : 500;
+    return res.status(status).json({ error: err?.message || "Internal Server Error" });
+  }
+  res.status(500).send("Internal Server Error");
 });
 
 // ---- listen ----
