@@ -845,6 +845,92 @@ async function fetchHtml(url) {
   throw new Error(`Fetch failed for ${url} after ${userAgents.length} attempts: ${lastError.message}`);
 }
 
+// Post-process Readability output to remove common artifacts
+function postProcessReadabilityContent(html) {
+  try {
+    if (!html || typeof html !== 'string') return html;
+    
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+    
+    // Remove elements with common artifact patterns
+    const artifactSelectors = [
+      // Navigation and menus
+      "[class*='nav']", "[class*='menu']", "[class*='breadcrumb']",
+      "[id*='nav']", "[id*='menu']",
+      // Social and sharing
+      "[class*='share']", "[class*='social']", "[id*='share']",
+      // Related content
+      "[class*='related']", "[class*='recommend']", "[class*='more-from']",
+      "[class*='editor-pick']", "[class*='trending']", "[class*='popular']",
+      "[class*='latest']", "[class*='read-next']",
+      // Ads and promos
+      "[class*='ad-']", "[class*='advertisement']", "[class*='promo']",
+      // Tags and metadata
+      "[class*='tag']", "[class*='category']", "[class*='topics']",
+      // Footers and attribution blocks
+      "[class*='footer']", "[class*='site-footer']",
+      // Comments
+      "[class*='comment']", "[id*='comment']",
+      // Newsletter and subscription
+      "[class*='newsletter']", "[class*='subscribe']", "[class*='signup']"
+    ];
+    
+    artifactSelectors.forEach(selector => {
+      try {
+        doc.querySelectorAll(selector).forEach(el => el.remove());
+      } catch (e) {
+        // Skip invalid selectors
+      }
+    });
+    
+    // Remove elements containing common artifact phrases
+    const artifactPhrases = [
+      /more from/i, /latest from/i, /editor'?s picks?/i, /trending/i,
+      /related articles?/i, /read more/i, /continue reading/i,
+      /sign up/i, /newsletter/i, /subscribe/i,
+      /share this/i, /follow us/i,
+      /topics:?/i, /tags:?/i, /categories:?/i,
+      /filed under/i, /posted in/i,
+      /copyright/i, /all rights reserved/i,
+      /attributions?\.?$/i, /sources?\.?$/i
+    ];
+    
+    // Check all text nodes and their parent elements
+    const allElements = doc.querySelectorAll('p, div, section, aside, footer, header, h2, h3, h4, h5, h6');
+    allElements.forEach(el => {
+      const text = el.textContent.trim();
+      // Only remove if it's a short element (likely a heading or label)
+      if (text.length < 100) {
+        for (const phrase of artifactPhrases) {
+          if (phrase.test(text)) {
+            el.remove();
+            break;
+          }
+        }
+      }
+    });
+    
+    // Remove lists that look like navigation or metadata
+    doc.querySelectorAll('ul, ol').forEach(list => {
+      const items = list.querySelectorAll('li');
+      if (items.length > 0 && items.length < 10) {
+        // Check if all items are very short (likely navigation)
+        const allShort = Array.from(items).every(li => li.textContent.trim().length < 50);
+        if (allShort) {
+          list.remove();
+        }
+      }
+    });
+    
+    return doc.body.innerHTML;
+  } catch (error) {
+    console.error('Error in postProcessReadabilityContent:', error.message);
+    // Return original HTML if processing fails
+    return html;
+  }
+}
+
 // Extract the main article content using Readability; fall back to cleaned <main/article/body>
 function extractMainFromHtml(rawHtml, baseUrl = "") {
   const rough = rawHtml.replace(/<\/?(nav|aside|footer|header|iframe|noscript|template)[\s\S]*?>/gi, "");
@@ -855,12 +941,17 @@ function extractMainFromHtml(rawHtml, baseUrl = "") {
   const junkSel = [
     "[role='navigation']","[role='complementary']","[role='banner']","[role='contentinfo']",
     ".sidebar",".side-bar",".widget",".ad",".ads",".advert",".advertisement",
-    ".share",".social",".social-share",".share-buttons",
+    ".share",".social",".social-share",".share-buttons",".social-media",
     ".menu",".nav",".navigation",".breadcrumbs",".breadcrumb",
     ".cookie",".gdpr",".newsletter",".subscribe",".subscription",
     ".pagination",".comments",".comment",".related",".recirc",".recommendations",
     ".footer",".header",".hero",".masthead",
     ".promo",".sponsored",".outbrain",".taboola",
+    ".attribution",".byline-block",".author-info",
+    ".tags",".tag-list",".categories",
+    ".more-from",".read-more",".continue-reading",
+    ".editor-picks",".editor-choice",".trending",
+    ".latest",".popular",".most-read",
     "script","style","link[rel='stylesheet']","meta"
   ].join(",");
   doc.querySelectorAll(junkSel).forEach(n => n.remove());
@@ -875,7 +966,9 @@ function extractMainFromHtml(rawHtml, baseUrl = "") {
   
   if (art && art.content && art.content.trim().length > 100) {
     console.log(`✓ Readability extracted ${art.content.length} chars from ${baseUrl}`);
-    return { html: art.content, title: art.title || "", byline: art.byline || "" };
+    // Post-process the Readability output to remove additional artifacts
+    const cleanedContent = postProcessReadabilityContent(art.content);
+    return { html: cleanedContent, title: art.title || "", byline: art.byline || "" };
   }
   
   console.warn(`⚠ Readability failed for ${baseUrl}, trying fallbacks...`);
@@ -964,9 +1057,41 @@ async function convertHtmlToMd(html, outPath, workdir) {
   await run("pandoc", [
     tempHtml, "-f", "html", "-t", "gfm",
     "--extract-media", workdir,
+    "--strip-comments",  // Remove HTML comments
     "-o", outPath, "--wrap=none"
   ]);
   fs.unlinkSync(tempHtml);
+  
+  // Post-process markdown to remove common artifact patterns
+  if (fs.existsSync(outPath)) {
+    let md = fs.readFileSync(outPath, "utf8");
+    
+    // Remove common artifact headings and their following content until next heading
+    const artifactHeadingPatterns = [
+      /^#{1,6}\s*(?:More from|Latest from|Editor'?s? Picks?|Trending|Related Articles?|Read More|Topics?|Tags?|Categories|Filed Under|Posted In|Attributions?|Sources?)\s*$/gmi,
+      /^#{1,6}\s*(?:Share This|Follow Us|Sign Up|Newsletter|Subscribe)\s*$/gmi
+    ];
+    
+    artifactHeadingPatterns.forEach(pattern => {
+      md = md.replace(new RegExp(pattern.source + '[\\s\\S]*?(?=^#{1,6}\\s|$)', 'gmi'), '');
+    });
+    
+    // Remove standalone lines with artifact phrases
+    const artifactLinePatterns = [
+      /^.*?(?:More from|Latest from|Editor'?s? Picks?).*$/gmi,
+      /^.*?(?:Attributions?|Sources?)\s*\.?\s*$/gmi,
+      /^\d+\s*$/gm, // Standalone numbers (often page numbers from navigation)
+    ];
+    
+    artifactLinePatterns.forEach(pattern => {
+      md = md.replace(pattern, '');
+    });
+    
+    // Clean up multiple consecutive blank lines
+    md = md.replace(/\n{3,}/g, '\n\n');
+    
+    fs.writeFileSync(outPath, md.trim(), "utf8");
+  }
 }
 
 function normalizeSvgUrl(u) {

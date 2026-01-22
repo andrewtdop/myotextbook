@@ -38,6 +38,16 @@ async function refreshMe() {
   const addUserBtn = $("#addUserBtn");
   if (addUserBtn) addUserBtn.classList.toggle("hidden", !(currentUser?.is_admin));
   
+  // Toggle logout button
+  const logoutBtn = $("#logoutBtn");
+  if (logoutBtn) logoutBtn.classList.toggle("hidden", !currentUser);
+  
+  // Update profile button text
+  const profileBtn = $("#profileBtn");
+  if (profileBtn) {
+    profileBtn.textContent = currentUser ? "Profile" : "Log In";
+  }
+  
   // Toggle UI elements based on authentication status
   updateUIForAuthStatus();
 }
