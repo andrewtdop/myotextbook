@@ -16,6 +16,7 @@ process.on("unhandledRejection", e => {
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import Database from "better-sqlite3";
@@ -310,73 +311,36 @@ const alertCache = new Map(); // key -> timestamp of last alert
 const ALERT_COOLDOWN = 60 * 60 * 1000; // 1 hour between same alerts
 
 async function sendMonitoringAlert(subject, message, severity = 'warning') {
-  const cacheKey = `${severity}:${subject}`;
-  const lastAlert = alertCache.get(cacheKey);
-  
-  // Rate limit: don't send same alert within cooldown period
-  if (lastAlert && (Date.now() - lastAlert) < ALERT_COOLDOWN) {
-    console.log(`[ALERT SUPPRESSED] ${subject} (sent ${Math.round((Date.now() - lastAlert) / 60000)} min ago)`);
-    return;
-  }
-  
-  const timestamp = new Date().toISOString();
-  const fullMessage = `[${severity.toUpperCase()}] ${timestamp}\n\n${message}\n\nServer: ${process.env.HOSTNAME || 'MYOText Instance'}\nPID: ${process.pid}`;
-  
-  console.error(`[MONITORING ALERT] ${subject}\n${fullMessage}`);
-  
-  alertCache.set(cacheKey, Date.now());
-  
-  if (mgClient) {
-    try {
+  try {
+    const cacheKey = `${severity}:${subject}`;
+    const lastAlert = alertCache.get(cacheKey);
+    
+    // Rate limit: don't send same alert within cooldown period
+    if (lastAlert && (Date.now() - lastAlert) < ALERT_COOLDOWN) {
+      console.log(`[ALERT SUPPRESSED] ${subject} (sent ${Math.round((Date.now() - lastAlert) / 60000)} min ago)`);
+      return;
+    }
+    
+    const timestamp = new Date().toISOString();
+    const fullMessage = `[${severity.toUpperCase()}] ${timestamp}\n\n${message}\n\nServer: ${process.env.HOSTNAME || 'MYOText Instance'}\nPID: ${process.pid}`;
+    
+    console.error(`[MONITORING ALERT] ${subject}\n${fullMessage}`);
+    
+    alertCache.set(cacheKey, Date.now());
+    
+    if (mgClient) {
       await sendEmail({
         to: ADMIN_EMAIL,
         subject: `[MYOText ${severity.toUpperCase()}] ${subject}`,
         text: fullMessage
       });
       console.log(`✓ Alert email sent to ${ADMIN_EMAIL}`);
-    } catch (err) {
-      console.error('Failed to send alert email:', err.message);
     }
+  } catch (err) {
+    // Never let monitoring break the application
+    console.error('Monitoring alert failed:', err.message);
   }
 }
-
-// Now that sendMonitoringAlert is defined, enhance error handlers
-process.removeAllListeners('uncaughtException');
-process.removeAllListeners('unhandledRejection');
-
-process.on("uncaughtException", async (e) => { 
-  console.error("UNCAUGHT EXCEPTION:", e);
-  try {
-    await Promise.race([
-      sendMonitoringAlert(
-        'Uncaught Exception - Server Crashed',
-        `The server crashed due to an uncaught exception:\n\n${e.stack || e.message}`,
-        'critical'
-      ),
-      new Promise(resolve => setTimeout(resolve, 3000))
-    ]);
-  } catch (alertErr) {
-    console.error("Failed to send crash alert:", alertErr);
-  }
-  process.exit(1);
-});
-
-process.on("unhandledRejection", async (e) => { 
-  console.error("UNHANDLED REJECTION:", e);
-  try {
-    await Promise.race([
-      sendMonitoringAlert(
-        'Unhandled Promise Rejection',
-        `Unhandled promise rejection:\n\n${e?.stack || e}`,
-        'error'
-      ),
-      new Promise(resolve => setTimeout(resolve, 3000))
-    ]);
-  } catch (alertErr) {
-    console.error("Failed to send rejection alert:", alertErr);
-  }
-  process.exit(1);
-});
 
 async function sendEmail({ to, subject, text, html }) {
   if (!mgClient) {
@@ -2743,8 +2707,8 @@ app.use(async (err, req, res, _next) => {
 // ---- System Health Monitoring ----
 function getSystemHealth() {
   const used = process.memoryUsage();
-  const totalMem = require('os').totalmem();
-  const freeMem = require('os').freemem();
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
   const usedMemPct = ((totalMem - freeMem) / totalMem * 100).toFixed(1);
   
   return {
@@ -2784,8 +2748,7 @@ async function checkSystemHealth() {
       }
     }
     
-    // Check disk space
-    const { spawn } = require('child_process');
+    // Check disk space (spawn already imported at top)
     const df = spawn('df', ['-h', DATA_DIR]);
     let output = '';
     df.stdout.on('data', data => output += data);
