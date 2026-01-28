@@ -1,7 +1,45 @@
-// ---- early diagnostics (optional) ----
-process.on("uncaughtException", e => { console.error("UNCaught", e); process.exit(1); });
-process.on("unhandledRejection", e => { console.error("UNhandled", e); process.exit(1); });
+// ---- early diagnostics with monitoring ----
 console.log("Booting server.js...");
+
+// Handle uncaught exceptions with monitoring
+process.on("uncaughtException", async (e) => { 
+  console.error("UNCAUGHT EXCEPTION:", e);
+  try {
+    // Try to send alert before exiting
+    const send = async () => {
+      if (typeof sendMonitoringAlert === 'function') {
+        await sendMonitoringAlert(
+          'Uncaught Exception - Server Crashed',
+          `The server crashed due to an uncaught exception:\n\n${e.stack || e.message}`,
+          'critical'
+        );
+      }
+    };
+    await Promise.race([send(), new Promise(resolve => setTimeout(resolve, 3000))]);
+  } catch (alertErr) {
+    console.error("Failed to send crash alert:", alertErr);
+  }
+  process.exit(1);
+});
+
+process.on("unhandledRejection", async (e) => { 
+  console.error("UNHANDLED REJECTION:", e);
+  try {
+    const send = async () => {
+      if (typeof sendMonitoringAlert === 'function') {
+        await sendMonitoringAlert(
+          'Unhandled Promise Rejection',
+          `Unhandled promise rejection:\n\n${e?.stack || e}`,
+          'error'
+        );
+      }
+    };
+    await Promise.race([send(), new Promise(resolve => setTimeout(resolve, 3000))]);
+  } catch (alertErr) {
+    console.error("Failed to send rejection alert:", alertErr);
+  }
+  process.exit(1);
+});
 
 // ---- imports ----
 import express from "express";
@@ -83,9 +121,36 @@ for (const d of [DATA_DIR, UPLOADS_DIR, EXPORTS_DIR, TMP_DIR]) {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 }
 
+// Clean up old temp directories on startup (older than 24 hours)
+try {
+  const tempDirs = fs.readdirSync(TMP_DIR);
+  const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+  let cleanedCount = 0;
+  
+  for (const dir of tempDirs) {
+    if (!dir.startsWith('build-') && !dir.startsWith('cache-')) continue;
+    const dirPath = path.join(TMP_DIR, dir);
+    try {
+      const stats = fs.statSync(dirPath);
+      if (stats.isDirectory() && stats.mtimeMs < oneDayAgo) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+        cleanedCount++;
+      }
+    } catch (err) {
+      // Skip if can't stat or remove
+    }
+  }
+  if (cleanedCount > 0) {
+    console.log(`✓ Cleaned up ${cleanedCount} old temp directories`);
+  }
+} catch (err) {
+  console.warn('⚠ Failed to cleanup temp directories:', err.message);
+}
+
 // ---- sqlite ----
 const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
+// Using DELETE mode instead of WAL to reduce I/O pressure in VM environment
+db.pragma("journal_mode = DELETE");
 db.pragma("foreign_keys = ON");
 
 db.exec(`
@@ -255,7 +320,7 @@ const upload = multer({ storage });
 const MAILGUN_API_KEY = process.env.MAILGUN_API_KEY || '';
 const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || 'mg.myotext.org';
 const FROM_EMAIL = 'MYOText Admin <admin@mg.myotext.org>';
-const ADMIN_EMAIL = 'avarsanyi2@huskers.unl.edu';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'avarsanyi2@nebraska.edu';
 
 let mgClient = null;
 if (MAILGUN_API_KEY && MAILGUN_DOMAIN) {
@@ -264,6 +329,44 @@ if (MAILGUN_API_KEY && MAILGUN_DOMAIN) {
     username: 'api',
     key: MAILGUN_API_KEY
   });
+  console.log('✓ Mailgun configured for monitoring alerts');
+} else {
+  console.warn('⚠ Mailgun not configured - monitoring alerts will be logged only');
+}
+
+// Alert tracking to prevent spam
+const alertCache = new Map(); // key -> timestamp of last alert
+const ALERT_COOLDOWN = 60 * 60 * 1000; // 1 hour between same alerts
+
+async function sendMonitoringAlert(subject, message, severity = 'warning') {
+  const cacheKey = `${severity}:${subject}`;
+  const lastAlert = alertCache.get(cacheKey);
+  
+  // Rate limit: don't send same alert within cooldown period
+  if (lastAlert && (Date.now() - lastAlert) < ALERT_COOLDOWN) {
+    console.log(`[ALERT SUPPRESSED] ${subject} (sent ${Math.round((Date.now() - lastAlert) / 60000)} min ago)`);
+    return;
+  }
+  
+  const timestamp = new Date().toISOString();
+  const fullMessage = `[${severity.toUpperCase()}] ${timestamp}\n\n${message}\n\nServer: ${process.env.HOSTNAME || 'MYOText Instance'}\nPID: ${process.pid}`;
+  
+  console.error(`[MONITORING ALERT] ${subject}\n${fullMessage}`);
+  
+  alertCache.set(cacheKey, Date.now());
+  
+  if (mgClient) {
+    try {
+      await sendEmail({
+        to: ADMIN_EMAIL,
+        subject: `[MYOText ${severity.toUpperCase()}] ${subject}`,
+        text: fullMessage
+      });
+      console.log(`✓ Alert email sent to ${ADMIN_EMAIL}`);
+    } catch (err) {
+      console.error('Failed to send alert email:', err.message);
+    }
+  }
 }
 
 async function sendEmail({ to, subject, text, html }) {
@@ -1771,6 +1874,13 @@ async function exportProjectTo(format, project, items, options = {}, progressCb 
 
   report("Done");
   
+  // Clean up temp workspace to prevent I/O buildup
+  try {
+    fs.rmSync(workdir, { recursive: true, force: true });
+  } catch (err) {
+    console.warn('Failed to cleanup temp directory:', workdir, err.message);
+  }
+  
   // Return export info including any failed pages
   return { 
     path: outPath, 
@@ -2601,8 +2711,18 @@ app.post("/api/projects/:id/export", async (req, res) => {
 // ---- error handler (keep API responses JSON) ----
 // If a route throws and doesn't catch, Express defaults to an HTML error page.
 // The client expects JSON/text, so normalize errors for /api/*.
-app.use((err, req, res, _next) => {
+app.use(async (err, req, res, _next) => {
   console.error("Unhandled route error:", err);
+  
+  // Send alert for 500 errors
+  if (err && (!err.status || err.status >= 500)) {
+    await sendMonitoringAlert(
+      'Server Error in Route Handler',
+      `Route: ${req.method} ${req.path}\nError: ${err.message}\n\nStack:\n${err.stack}`,
+      'error'
+    ).catch(e => console.error('Failed to send error alert:', e));
+  }
+  
   const wantsJson = req.path?.startsWith("/api/") || req.headers.accept?.includes("application/json");
   if (wantsJson) {
     const status = (typeof err?.status === "number" && err.status >= 400 && err.status < 600) ? err.status : 500;
@@ -2611,8 +2731,93 @@ app.use((err, req, res, _next) => {
   res.status(500).send("Internal Server Error");
 });
 
+// ---- System Health Monitoring ----
+function getSystemHealth() {
+  const used = process.memoryUsage();
+  const totalMem = require('os').totalmem();
+  const freeMem = require('os').freemem();
+  const usedMemPct = ((totalMem - freeMem) / totalMem * 100).toFixed(1);
+  
+  return {
+    memory: {
+      heapUsed: Math.round(used.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(used.heapTotal / 1024 / 1024),
+      rss: Math.round(used.rss / 1024 / 1024),
+      systemUsed: usedMemPct
+    },
+    uptime: Math.round(process.uptime()),
+    pid: process.pid
+  };
+}
+
+async function checkSystemHealth() {
+  try {
+    const health = getSystemHealth();
+    
+    // Check memory usage
+    if (health.memory.systemUsed > 90) {
+      await sendMonitoringAlert(
+        'High Memory Usage',
+        `System memory usage is ${health.memory.systemUsed}%\nHeap: ${health.memory.heapUsed}MB / ${health.memory.heapTotal}MB\nRSS: ${health.memory.rss}MB`,
+        'warning'
+      );
+    }
+    
+    // Check temp directory buildup
+    if (fs.existsSync(TMP_DIR)) {
+      const tempDirs = fs.readdirSync(TMP_DIR).filter(d => d.startsWith('build-') || d.startsWith('cache-'));
+      if (tempDirs.length > 50) {
+        await sendMonitoringAlert(
+          'Excessive Temp Directories',
+          `${tempDirs.length} temporary directories found in ${TMP_DIR}.\nThis may indicate cleanup is not working properly.`,
+          'warning'
+        );
+      }
+    }
+    
+    // Check disk space
+    const { spawn } = require('child_process');
+    const df = spawn('df', ['-h', DATA_DIR]);
+    let output = '';
+    df.stdout.on('data', data => output += data);
+    df.on('close', async () => {
+      const lines = output.split('\n');
+      if (lines.length > 1) {
+        const parts = lines[1].split(/\s+/);
+        const usePercent = parseInt(parts[4]);
+        if (usePercent > 90) {
+          await sendMonitoringAlert(
+            'Low Disk Space',
+            `Disk usage is ${usePercent}% on ${DATA_DIR}\n\n${output}`,
+            'warning'
+          );
+        }
+      }
+    });
+    
+  } catch (err) {
+    console.error('Health check failed:', err.message);
+  }
+}
+
+// Run health check every 15 minutes
+setInterval(checkSystemHealth, 15 * 60 * 1000);
+
 // ---- listen ----
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`MYOTextbook listening on http://localhost:${PORT}\nDATA_DIR: ${DATA_DIR}\nUPLOADS_DIR: ${UPLOADS_DIR}\nEXPORTS_DIR: ${EXPORTS_DIR}\nTMP_DIR: ${TMP_DIR}`);
+  
+  // Send startup notification
+  const health = getSystemHealth();
+  if (mgClient) {
+    await sendMonitoringAlert(
+      'Server Started',
+      `MYOTextbook server started successfully.\n\nMemory: ${health.memory.heapUsed}MB heap, ${health.memory.rss}MB RSS\nSystem Memory: ${health.memory.systemUsed}% used\nPort: ${PORT}`,
+      'info'
+    ).catch(err => console.log('Startup notification failed:', err.message));
+  }
+  
+  // Run initial health check after 30 seconds
+  setTimeout(checkSystemHealth, 30000);
 });
