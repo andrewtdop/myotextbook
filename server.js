@@ -1,44 +1,15 @@
-// ---- early diagnostics with monitoring ----
+// ---- early diagnostics ----
 console.log("Booting server.js...");
 
-// Handle uncaught exceptions with monitoring
-process.on("uncaughtException", async (e) => { 
-  console.error("UNCAUGHT EXCEPTION:", e);
-  try {
-    // Try to send alert before exiting
-    const send = async () => {
-      if (typeof sendMonitoringAlert === 'function') {
-        await sendMonitoringAlert(
-          'Uncaught Exception - Server Crashed',
-          `The server crashed due to an uncaught exception:\n\n${e.stack || e.message}`,
-          'critical'
-        );
-      }
-    };
-    await Promise.race([send(), new Promise(resolve => setTimeout(resolve, 3000))]);
-  } catch (alertErr) {
-    console.error("Failed to send crash alert:", alertErr);
-  }
-  process.exit(1);
+// Simple error handlers - monitoring alerts will be added after Mailgun is configured
+process.on("uncaughtException", e => { 
+  console.error("UNCAUGHT EXCEPTION:", e); 
+  process.exit(1); 
 });
 
-process.on("unhandledRejection", async (e) => { 
-  console.error("UNHANDLED REJECTION:", e);
-  try {
-    const send = async () => {
-      if (typeof sendMonitoringAlert === 'function') {
-        await sendMonitoringAlert(
-          'Unhandled Promise Rejection',
-          `Unhandled promise rejection:\n\n${e?.stack || e}`,
-          'error'
-        );
-      }
-    };
-    await Promise.race([send(), new Promise(resolve => setTimeout(resolve, 3000))]);
-  } catch (alertErr) {
-    console.error("Failed to send rejection alert:", alertErr);
-  }
-  process.exit(1);
+process.on("unhandledRejection", e => { 
+  console.error("UNHANDLED REJECTION:", e); 
+  process.exit(1); 
 });
 
 // ---- imports ----
@@ -368,6 +339,44 @@ async function sendMonitoringAlert(subject, message, severity = 'warning') {
     }
   }
 }
+
+// Now that sendMonitoringAlert is defined, enhance error handlers
+process.removeAllListeners('uncaughtException');
+process.removeAllListeners('unhandledRejection');
+
+process.on("uncaughtException", async (e) => { 
+  console.error("UNCAUGHT EXCEPTION:", e);
+  try {
+    await Promise.race([
+      sendMonitoringAlert(
+        'Uncaught Exception - Server Crashed',
+        `The server crashed due to an uncaught exception:\n\n${e.stack || e.message}`,
+        'critical'
+      ),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
+  } catch (alertErr) {
+    console.error("Failed to send crash alert:", alertErr);
+  }
+  process.exit(1);
+});
+
+process.on("unhandledRejection", async (e) => { 
+  console.error("UNHANDLED REJECTION:", e);
+  try {
+    await Promise.race([
+      sendMonitoringAlert(
+        'Unhandled Promise Rejection',
+        `Unhandled promise rejection:\n\n${e?.stack || e}`,
+        'error'
+      ),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
+  } catch (alertErr) {
+    console.error("Failed to send rejection alert:", alertErr);
+  }
+  process.exit(1);
+});
 
 async function sendEmail({ to, subject, text, html }) {
   if (!mgClient) {
