@@ -356,9 +356,9 @@
     <h2 id="loginModalTitle" class="text-lg font-semibold mb-3">Login</h2>
     <form id="loginForm" class="space-y-2" aria-label="Login form">
       <label for="login_username" class="sr-only">Username</label>
-      <input name="username" id="login_username" type="text" class="w-full border rounded px-3 py-2" placeholder="Username" value="andrew" aria-label="Username"/>
+      <input name="username" id="login_username" type="text" class="w-full border rounded px-3 py-2" placeholder="Username" aria-label="Username" autocomplete="username"/>
       <label for="login_password" class="sr-only">Password</label>
-      <input name="password" id="login_password" type="password" class="w-full border rounded px-3 py-2" placeholder="Password" value="P@ssword" aria-label="Password"/>
+      <input name="password" id="login_password" type="password" class="w-full border rounded px-3 py-2" placeholder="Password" aria-label="Password" autocomplete="current-password"/>
       <div class="flex justify-end gap-2 mt-2">
         <button type="button" id="loginClose" class="px-3 py-1.5 rounded border" aria-label="Close login dialog">Close</button>
         <button type="submit" class="px-3 py-1.5 rounded bg-red-600 text-white" aria-label="Submit login credentials">Login</button>

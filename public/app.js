@@ -31,6 +31,36 @@ let sortableInstance = null;
 let _allProjects = []; // dashboard cache for filtering
 let currentUser = null;
 
+function canEditProject(project) {
+  if (!currentUser || !project) return false;
+  return !!currentUser.is_admin || currentUser.username === project.author_username;
+}
+
+function canEditCurrentProject() {
+  return canEditProject(currentProject);
+}
+
+function updateProjectPermissionUI() {
+  const canEdit = canEditCurrentProject();
+  const isLoggedIn = !!currentUser;
+  const isViewingOtherUsersProject = !!currentProject && isLoggedIn && !canEdit;
+
+  addContentForm?.classList.toggle("hidden", !canEdit);
+  saveProjectBtn?.classList.toggle("hidden", !canEdit);
+
+  const copyBtn = $("#copyEditBtn");
+  if (copyBtn) copyBtn.classList.toggle("hidden", !isViewingOtherUsersProject);
+
+  if (projectName) {
+    projectName.readOnly = !canEdit;
+    projectName.classList.toggle("bg-gray-100", !canEdit);
+  }
+  if (projectKeywords) {
+    projectKeywords.readOnly = !canEdit;
+    projectKeywords.classList.toggle("bg-gray-100", !canEdit);
+  }
+}
+
 async function refreshMe() {
   currentUser = await fetchJSON("/api/me").catch(()=>null);
   
@@ -69,6 +99,7 @@ function updateUIForAuthStatus() {
   
   // Note: Copy & Edit button visibility is handled separately in openProject()
   // based on project ownership logic
+  updateProjectPermissionUI();
   
   // Show login prompt for anonymous users in project view
   showLoginPrompts(!isLoggedIn);
@@ -362,11 +393,10 @@ async function openProject(id){
 
     // --- NEW: meta strip (version/owner), copy button visibility, version log ---
     const meta = $("#projectMeta");
-    if (meta) meta.textContent = `Version: ${p.version_text || 'v1'}  ·  Owner: ${p.author_username || 'andrew'}`;
+    if (meta) meta.textContent = `Version: ${p.version_text || 'v1'}  ·  Owner: ${p.author_username || '—'}`;
 
     await refreshMe();
-    const copyBtn = $("#copyEditBtn");
-    if (copyBtn) copyBtn.classList.toggle("hidden", !currentUser || currentUser.username === (p.author_username || 'andrew'));
+    updateProjectPermissionUI();
 
     const tbody = $("#versionLogTbody");
     if (tbody) {
@@ -653,6 +683,10 @@ function bindGlobalUI(){
       return;
     }
     if (!currentProject) return;
+    if (!canEditCurrentProject()) {
+      alert("You can only edit your own projects. Use Copy and Edit.");
+      return;
+    }
 
     const keywordsCsv = parseKeywordsCSV(projectKeywords?.value);
 
@@ -688,6 +722,10 @@ function bindGlobalUI(){
       return;
     }
     if (!currentProject) return;
+    if (!canEditCurrentProject()) {
+      alert("You can only edit your own projects. Use Copy and Edit.");
+      return;
+    }
 
     const fd       = new FormData(addContentForm);
     const kind     = (fd.get("kind") || "url").toLowerCase();     // url | wikipedia | image | file | heading | titlepage
@@ -848,6 +886,7 @@ function bindKindUI() {
 async function refreshProjectState(){
   if(!currentProject) return;
   currentProject = await fetchJSON(`/api/projects/${currentProject.id}`);
+  updateProjectPermissionUI();
   await renderItems();
   ensureSortable();
 }
@@ -901,7 +940,22 @@ function makeEditableText(value, placeholder, onSave){
   return wrap;
 }
 
+function makeReadOnlyText(value, placeholder = "") {
+  const wrap = el("div", { className: "cell" });
+  const content = (value || "").trim();
+  const view = el("div", {
+    className: `cell-view ${content ? "" : "text-gray-400"}`.trim(),
+    textContent: content || placeholder
+  });
+  wrap.append(view);
+  return wrap;
+}
+
 async function saveItemPartial(it, patch){
+  if (!canEditCurrentProject()) {
+    alert("You can only edit your own projects. Use Copy and Edit.");
+    return;
+  }
   await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}`,{
     method:"PATCH",
     headers:{"Content-Type":"application/json"},
@@ -913,6 +967,7 @@ async function renderItems(){
   if (!itemsTbody) return;
   itemsTbody.innerHTML = "";
   const items = currentProject?.items || [];
+  const canEdit = canEditCurrentProject();
   if(!items.length){
     itemsTbody.append(el("tr",{}, el("td",{colSpan:6,className:"p-3 text-gray-500"},"No items yet.")));
     return;
@@ -927,22 +982,28 @@ async function renderItems(){
     // drag handle + index
     const dragTd = document.createElement("td");
     dragTd.className = "p-2 align-top";
-    dragTd.append(
-      el("span", {
-        className:"drag-handle select-none cursor-move text-gray-600 px-2 py-1 inline-block rounded hover:bg-gray-200",
-        title:"Drag to reorder"
-      }, "≡"),
-      el("span", {className:"text-gray-500 ml-2"}, String(idx+1))
-    );
+    if (canEdit) {
+      dragTd.append(
+        el("span", {
+          className:"drag-handle select-none cursor-move text-gray-600 px-2 py-1 inline-block rounded hover:bg-gray-200",
+          title:"Drag to reorder"
+        }, "≡")
+      );
+    }
+    dragTd.append(el("span", {className:"text-gray-500 ml-2"}, String(idx+1)));
     tr.appendChild(dragTd);
 
     // title
     const titleTd = document.createElement("td");
     titleTd.className = "align-top";
-    if (it.type === "titlepage") {
-      titleTd.append(makeEditableText(it.title||"","Title Page",(v)=>saveItemPartial(it,{title:(v||"").trim()||"Untitled"})));
+    if (canEdit) {
+      if (it.type === "titlepage") {
+        titleTd.append(makeEditableText(it.title||"","Title Page",(v)=>saveItemPartial(it,{title:(v||"").trim()||"Untitled"})));
+      } else {
+        titleTd.append(makeEditableText(it.title||"","Title",(v)=>saveItemPartial(it,{title:(v||"").trim()||"Untitled"})));
+      }
     } else {
-      titleTd.append(makeEditableText(it.title||"","Title",(v)=>saveItemPartial(it,{title:(v||"").trim()||"Untitled"})));
+      titleTd.append(makeReadOnlyText(it.title || "", it.type === "titlepage" ? "Title Page" : "Title"));
     }
     tr.appendChild(titleTd);
 
@@ -956,8 +1017,9 @@ async function renderItems(){
     const refTd = document.createElement("td");
     refTd.className = "p-2 align-top space-y-1";
     if (it.type === "url" || it.type === "wikipedia" || (it.type === "image" && it.source_url)) {
-      refTd.append(
-        makeEditableText(it.source_url||"","https://...", (v)=>saveItemPartial(it,{source_url:(v||"").trim()||null}))
+      refTd.append(canEdit
+        ? makeEditableText(it.source_url||"","https://...", (v)=>saveItemPartial(it,{source_url:(v||"").trim()||null}))
+        : makeReadOnlyText(it.source_url || "", "https://...")
       );
     } else if (it.local_path) {
       refTd.append(el("div",{className:"text-xs text-gray-500 break-all"}, it.local_path));
@@ -965,22 +1027,30 @@ async function renderItems(){
     if (it.type === "titlepage") {
       const opts = it.options || {};
       const subLbl = el("div",{className:"text-xs text-gray-600"},"Subtitle:");
-      const subEdit = makeEditableText(opts.subtitle||"","optional subtitle",(v)=>saveItemPartial(it,{options:{subtitle:v||""}}));
+      const subEdit = canEdit
+        ? makeEditableText(opts.subtitle||"","optional subtitle",(v)=>saveItemPartial(it,{options:{subtitle:v||""}}))
+        : makeReadOnlyText(opts.subtitle || "", "optional subtitle");
       refTd.append(subLbl,subEdit);
     }
     if (it.type === "image") {
       const opts = it.options || {};
       const capLbl = el("div",{className:"text-xs text-gray-600"},"Caption:");
-      const capEdit = makeEditableText(opts.caption||"","optional caption",(v)=>saveItemPartial(it,{options:{caption:v}}));
+      const capEdit = canEdit
+        ? makeEditableText(opts.caption||"","optional caption",(v)=>saveItemPartial(it,{options:{caption:v}}))
+        : makeReadOnlyText(opts.caption || "", "optional caption");
       const widthWrap = el("div",{className:"cell"});
       const widthLbl = el("div",{className:"text-xs text-gray-600"},"Width %:");
       const widthInput = el("input",{className:"cell-input",type:"number",min:10,max:100,value:Number(opts.widthPct||80)});
-      widthInput.addEventListener("blur", async ()=>{
-        const n = Math.min(100, Math.max(10, Number(widthInput.value||80)));
-        if (n !== Number(opts.widthPct||80)) await saveItemPartial(it,{options:{widthPct:n}});
-      });
-      widthInput.addEventListener("keydown",(e)=>{ if(e.key==="Enter"||e.key==="Escape") widthInput.blur(); });
-      widthWrap.append(widthLbl,widthInput);
+      if (canEdit) {
+        widthInput.addEventListener("blur", async ()=>{
+          const n = Math.min(100, Math.max(10, Number(widthInput.value||80)));
+          if (n !== Number(opts.widthPct||80)) await saveItemPartial(it,{options:{widthPct:n}});
+        });
+        widthInput.addEventListener("keydown",(e)=>{ if(e.key==="Enter"||e.key==="Escape") widthInput.blur(); });
+        widthWrap.append(widthLbl,widthInput);
+      } else {
+        widthWrap.append(widthLbl, el("div", { className: "text-sm text-gray-700" }, `${Number(opts.widthPct || 80)}`));
+      }
       refTd.append(capLbl,capEdit,widthWrap);
     }
     tr.appendChild(refTd);
@@ -989,30 +1059,32 @@ async function renderItems(){
     const cachedTd = document.createElement("td");
     cachedTd.className = "p-2 align-top text-center";
     if (it.type === "url") {
-      const checkbox = el("input", {
-        type: "checkbox",
-        className: "accent-red-600 cursor-pointer",
-        checked: it.cached_content ? true : false,
-        title: it.cached_content ? "Using cached content" : "Fetch fresh content on export"
-      });
-      checkbox.addEventListener("change", async () => {
-        try {
-          const result = await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}/cache`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cache: checkbox.checked })
-          });
-          // Update the item in currentProject
-          it.cached_content = result.cached ? "cached" : null;
-          checkbox.title = result.cached ? "Using cached content" : "Fetch fresh content on export";
-        } catch (err) {
-          console.error("Failed to toggle cache:", err);
-          // Revert checkbox state
-          checkbox.checked = !checkbox.checked;
-          alert("Failed to toggle cache: " + err.message);
-        }
-      });
-      cachedTd.append(checkbox);
+      if (canEdit) {
+        const checkbox = el("input", {
+          type: "checkbox",
+          className: "accent-red-600 cursor-pointer",
+          checked: it.cached_content ? true : false,
+          title: it.cached_content ? "Using cached content" : "Fetch fresh content on export"
+        });
+        checkbox.addEventListener("change", async () => {
+          try {
+            const result = await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}/cache`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ cache: checkbox.checked })
+            });
+            it.cached_content = result.cached ? "cached" : null;
+            checkbox.title = result.cached ? "Using cached content" : "Fetch fresh content on export";
+          } catch (err) {
+            console.error("Failed to toggle cache:", err);
+            checkbox.checked = !checkbox.checked;
+            alert("Failed to toggle cache: " + err.message);
+          }
+        });
+        cachedTd.append(checkbox);
+      } else {
+        cachedTd.append(el("span", { className: "text-gray-700 text-xs" }, it.cached_content ? "Yes" : "No"));
+      }
     } else {
       cachedTd.append(el("span", { className: "text-gray-400" }, "—"));
     }
@@ -1021,13 +1093,15 @@ async function renderItems(){
     // delete
     const delTd = document.createElement("td");
     delTd.className = "p-2 align-top text-right";
-    const delBtn = el("button",{className:"px-2 py-1 rounded border border-red-600 text-red-700 text-xs hover:bg-red-50"},"Delete");
-    delBtn.addEventListener("click", async ()=>{
-      if (!confirm("Delete this item?")) return;
-      await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}`, { method:"DELETE" });
-      await refreshProjectState();
-    });
-    delTd.append(delBtn);
+    if (canEdit) {
+      const delBtn = el("button",{className:"px-2 py-1 rounded border border-red-600 text-red-700 text-xs hover:bg-red-50"},"Delete");
+      delBtn.addEventListener("click", async ()=>{
+        if (!confirm("Delete this item?")) return;
+        await fetchJSON(`/api/projects/${currentProject.id}/items/${it.id}`, { method:"DELETE" });
+        await refreshProjectState();
+      });
+      delTd.append(delBtn);
+    }
     tr.appendChild(delTd);
 
     itemsTbody.appendChild(tr);
@@ -1040,6 +1114,7 @@ function ensureSortable(){
   if (!itemsTbody) return;
 
   if (sortableInstance) { try { sortableInstance.destroy(); } catch{} sortableInstance = null; }
+  if (!canEditCurrentProject()) return;
   if (!itemsTbody.children.length) return;
 
   sortableInstance = new Sortable(itemsTbody, {

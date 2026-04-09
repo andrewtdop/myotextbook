@@ -74,6 +74,24 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function canUserEditProject(user, project) {
+  if (!user || !project) return false;
+  return !!user.is_admin || user.username === project.author_username;
+}
+
+function getEditableProjectOrDeny(req, res) {
+  const p = getProject.get(req.params.id);
+  if (!p) {
+    res.status(404).json({ error: "Project not found" });
+    return null;
+  }
+  if (!canUserEditProject(req.session.user, p)) {
+    res.status(403).json({ error: "Permission denied. You can only edit your own projects. Use Copy and Edit." });
+    return null;
+  }
+  return p;
+}
+
 function parseVersion(v) { // "v3" or "v3.2"
   const m = /^v(\d+)(?:\.(\d+))?$/.exec(v || "v1");
   return { major: Number(m?.[1] || 1), minor: m?.[2] ? Number(m[2]) : null };
@@ -1899,8 +1917,8 @@ app.get("/api/projects/:id", (req, res) => {
 });
 
 app.put("/api/projects/:id", requireAuth, (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const actor = req.session.user?.username || p.author_username || "andrew";
   const name = (req.body.name ?? p.name).trim();
   const options = req.body.options ?? safeParseJSON(p.options_json, {});
@@ -2456,8 +2474,8 @@ app.put("/api/profile", requireAuth, (req, res) => {
 
 // Create item (url, wikipedia, heading, image)
 app.post("/api/projects/:id/items", requireAuth, async (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Project not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const items = getItems.all(p.id);
   const position = items.length ? (items[items.length - 1].position + 1) : 1;
   const id = nanoid(10);
@@ -2501,8 +2519,8 @@ app.post("/api/projects/:id/items", requireAuth, async (req, res) => {
 
 // Upload item (docx, pdf, image) — store only filename in DB
 app.post("/api/projects/:id/items/upload", requireAuth, upload.single("file"), (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Project not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const file = req.file;
   if (!file) return res.status(400).json({ error: "No file" });
   const mimetype = file.mimetype;
@@ -2524,8 +2542,13 @@ app.post("/api/projects/:id/items/upload", requireAuth, upload.single("file"), (
 
 // Reorder items in a project
 app.put("/api/projects/:id/items/reorder", requireAuth, (req, res) => {
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const order = req.body.order; // [{id, position}, ...]
   if (!Array.isArray(order)) return res.status(400).json({ error: "Bad payload" });
+  const projectItemIds = new Set(getItems.all(p.id).map(i => i.id));
+  const hasInvalidItem = order.some(r => !projectItemIds.has(r.id));
+  if (hasInvalidItem) return res.status(400).json({ error: "Order contains invalid item ids" });
   const tx = db.transaction((rows) => {
     rows.forEach(r => updateItemPositions.run(r.position, r.id));
   });
@@ -2535,8 +2558,8 @@ app.put("/api/projects/:id/items/reorder", requireAuth, (req, res) => {
 
 // Update item in a project (PATCH)
 app.patch("/api/projects/:id/items/:itemId", requireAuth, express.json(), (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Project not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const itemId = req.params.itemId;
   const item = getItemById.get(itemId, p.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
@@ -2577,8 +2600,8 @@ app.patch("/api/projects/:id/items/:itemId", requireAuth, express.json(), (req, 
 
 // Delete item in a project
 app.delete("/api/projects/:id/items/:itemId", requireAuth, (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Project not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const itemId = req.params.itemId;
   const item = getItemById.get(itemId, p.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
@@ -2588,8 +2611,8 @@ app.delete("/api/projects/:id/items/:itemId", requireAuth, (req, res) => {
 
 // Toggle caching for a URL item
 app.post("/api/projects/:id/items/:itemId/cache", requireAuth, async (req, res) => {
-  const p = getProject.get(req.params.id);
-  if (!p) return res.status(404).json({ error: "Project not found" });
+  const p = getEditableProjectOrDeny(req, res);
+  if (!p) return;
   const item = getItemById.get(req.params.itemId, p.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (item.type !== "url") return res.status(400).json({ error: "Only URL items can be cached" });
